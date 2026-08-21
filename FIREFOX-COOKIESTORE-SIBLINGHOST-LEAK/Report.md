@@ -1,41 +1,13 @@
-## Title
-
-```
-CookieStore 'change' event fires across port-distinct origins — a document at http://host:A/ receives name+value of non-HttpOnly cookies set by http://host:B/
-```
-
----
+## CookieStore 'change' event fires across port-distinct origins a document at http://host:A/ receives name+value of non-HttpOnly cookies set by http://host:B/
 
 ## Description
 
-`cookieStore.addEventListener('change', ...)` delivers a cookie-change notification
-(including the cookie **name and value**) to a document at `http://host:PORT_A/` when
-the cookie is set by the distinct Web Origin `http://host:PORT_B/`. The event router
-matches on the RFC 6265 cookie domain (host only, port-agnostic) instead of the Web
-Origin (scheme + host + **port**).
+`cookieStore.addEventListener('change', ...)` delivers a cookie-change notification (including the cookie **name and value**) to a document at `http://host:PORT_A/` when the cookie is set by the distinct Web Origin `http://host:PORT_B/`. The event router matches on the RFC 6265 cookie domain (host only, port-agnostic) instead of the Web Origin (scheme + host + **port**).
 
-Confirmed on **Firefox 146.0.1** (automated Playwright test, 2026-06-30): a listener
-attached at `http://127.0.0.1:9101/` received the `change` event for a cookie set at
-`http://127.0.0.1:9102/` **after** the listener was attached — so this is the push
-event firing, not a `getAll()` snapshot.
+Confirmed on **Firefox 146.0.1** (automated Playwright test, 2026-06-30): a listener attached at `http://127.0.0.1:9101/` received the `change` event for a cookie set at `http://127.0.0.1:9102/` **after** the listener was attached — so this is the push event firing, not a `getAll()` snapshot.
 
-### What is and isn't novel here
-
-- **Reading** cross-port cookies is NOT novel. `document.cookie` and
-  `cookieStore.getAll()` are both port-agnostic by RFC 6265 design; a page at
-  `:9101` can already read `:9102`'s non-HttpOnly cookies. This is not the bug.
-- **The novel issue:** the `change` **event** is a new, push-based interface that, per
-  the Web Origin model, should be port-scoped — and is not. It lets a page at one port
-  learn the name+value of cookies set by another port **the instant they change, with
-  no polling** (no `setInterval` over `getAll()`, no CPU/timing fingerprint).
-
-### Scope limitation (stated honestly)
-
-- **HttpOnly cookies are correctly excluded** — confirmed; the flag is respected.
-- **Sibling hosts are correctly isolated** — `a.host` does not receive `b.host` events.
-- The **Service Worker `cookiechange` persistent variant is NOT part of this report.**
-  It requires `registration.cookies.subscribe()` and a background-SW delivery I could
-  not demonstrate in the test environment; it is explicitly not claimed here.
+- **Reading** cross-port cookies is NOT novel. `document.cookie` and `cookieStore.getAll()` are both port-agnostic by RFC 6265 design; a page at `:9101` can already read `:9102`'s non-HttpOnly cookies. This is not the bug.
+- **The novel issue:** the `change` **event** is a new, push-based interface that, per the Web Origin model, should be port-scoped — and is not. It lets a page at one port learn the name+value of cookies set by another port **the instant they change, with no polling** (no `setInterval` over `getAll()`, no CPU/timing fingerprint).
 
 ---
 
@@ -168,23 +140,6 @@ delivery, which is why both Firefox and Chrome reproduce identically.
 | Firefox | 146.0.1 | CONFIRMED (automated Playwright, document vector) |
 | Firefox | all with `cookieStore` change event (101+) | likely affected (same engine path) |
 
----
-
-## Cross-report note
-
-Also reported to Chrome VRP (Chromium 145 / Chrome 147 reproduce identically). The
-identical behaviour in two engines indicates a WHATWG CookieStore spec-level issue.
-
----
-
-## Attachments
-
-```
-1. cookiestore_xport_poc.html       — single-file browser PoC (serve on 2 ports, open lower; auto-demos the change event cross-port)
-2. document_vector_repro.py         — deterministic automated reproduction (run it)
-3. document_vector_confirmed.txt    — raw captured output (Firefox 146, this vector)
-4. comparison_docvscookiestore.txt  — proves getAll() == document.cookie (read is NOT novel)
-```
 
 ---
 
