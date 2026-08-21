@@ -1,17 +1,5 @@
-# Mozilla Bugzilla Security Report — Bug 02
-# Platform: bugs.mozilla.org
-# Product: Firefox | Component: Core › Graphics: WebGPU
-# Severity: S3 (Medium) — Confirmed DoS, suspected UAF (exploitability unconfirmed)
-# Security-sensitive: YES
-# Filed: 2026-06-29 | Updated: 2026-06-30
+# WebGPU Worker mapAsync() + device.destroy() race crashes the Firefox GPU process confirmed tab DoS, suspected use-after-free
 
----
-
-## Title
-
-```
-WebGPU Worker mapAsync() + device.destroy() race crashes the Firefox GPU process — confirmed tab DoS, suspected use-after-free
-```
 
 ---
 
@@ -31,7 +19,7 @@ Confirmed on **Firefox 146** (Linux x86_64, WebGPU enabled).
 **Confirmed:** Firefox 146 (Playwright headless, Linux x86_64)
 
 **CVSS 3.1 (claimed):** `AV:N/AC:H/PR:N/UI:R/S:C/C:N/I:N/A:H` = **5.9 Medium** — confirmed DoS/crash only.  
-**CVSS 3.1 (NOT claimed — conditional on proof):** `AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:H` = **7.5 High** — would apply *only if* memory disclosure or a controlled UAF write is demonstrated. As of this filing that has **not** been proven (see "Escalation Attempt" below), so the claimed severity is Medium.
+**CVSS 3.1 :** `AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:H` = **7.5 High** would apply *only if* memory disclosure or a controlled UAF write is demonstrated. As of this filing that has **not** been proven (see "Escalation Attempt" below), so the claimed severity is Medium.
 
 ---
 
@@ -140,29 +128,19 @@ proof, so the report is scoped to the DoS that is actually demonstrated.
 
 ---
 
-## Escalation Attempt (transparency)
+## Escalation Attempt
 
-I built and ran a dedicated escalation harness rather than stop at the crash. I am
-recording the attempt and its negative result so triage has full context.
+I built and ran a dedicated escalation harness rather than stop at the crash. I am recording the attempt and its negative result so triage has full context.
 
-**Harness** (`poc/webgpu_uaf_weaponized.html` + `poc/run_exploit.py`): a 5-stage
-escalation — (1) confirm the primitive, (2) heap-groom 64×4096B mapped buffers with
-marker bytes, (3) hold a live `getMappedRange()`, free the device, churn-spray a
-reclaim pattern, then re-read the stale range to detect a cross-allocation UAF read
-(memory disclosure), (4) reclaim-and-corrupt race, (5) parallel worker swarm. The
-launcher implements a **control gate**: it first runs a benign `device + map + unmap`
-and *refuses to attribute any trigger crash to the bug* unless that control survives.
+**Harness** (`poc/webgpu_uaf_weaponized.html` + `poc/run_exploit.py`): a 5-stage escalation — (1) confirm the primitive, (2) heap-groom 64×4096B mapped buffers with marker bytes, (3) hold a live `getMappedRange()`, free the device, churn-spray a
+reclaim pattern, then re-read the stale range to detect a cross-allocation UAF read (memory disclosure), (4) reclaim-and-corrupt race, (5) parallel worker swarm. The launcher implements a **control gate**: it first runs a benign `device + map + unmap` and *refuses to attribute any trigger crash to the bug* unless that control survives.
 
 **Result on the test machine: inconclusive — the environment cannot test WebGPU.**
-- Hardware: VMware virtual adapter, Mesa **llvmpipe** software rasterizer, no hardware
-  Vulkan. (`lspci`, `glxinfo` → `llvmpipe`.)
+- Hardware: VMware virtual adapter, Mesa **llvmpipe** software rasterizer, no hardware Vulkan. (`lspci`, `glxinfo` → `llvmpipe`.)
 - Firefox 146 (automation build): the software WebGPU backend crashes on **any** usage
-  — bare `requestAdapter()` and bare `requestDevice()` crash identically to the trigger
-  (control matrix: 5 scenarios × 2 = 10/10 crash). The control gate therefore does not
-  pass, so **no crash on this host is attributable to the bug** and Stage 3's
-  disclosure check could not run.
-- Forcing software Vulkan (lavapipe) disables WebGPU entirely (`navigator.gpu`
-  undefined).
+  — bare `requestAdapter()` and bare `requestDevice()` crash identically to the trigger (control matrix: 5 scenarios × 2 = 10/10 crash). The control gate therefore does not
+  pass, so **no crash on this host is attributable to the bug** and Stage 3's disclosure check could not run.
+- Forcing software Vulkan (lavapipe) disables WebGPU entirely (`navigator.gpu` undefined).
 - System Firefox 140 ESR: `requestAdapter()` → `NotSupportedError: WebGPU is not yet
   available in Release or late Beta builds` (WebGPU is compiled out of Release/ESR).
 
@@ -174,9 +152,9 @@ report as report-grade proof. Until that runs, the claimed severity stays Medium
 
 ---
 
-## Additional DoS Vector (Confirmed Previously — Original iframe-based DoS)
+## Additional DoS Vector (Confirmed Previously Original iframe-based DoS)
 
-The original Bug 02 finding was iframe-based:
+The original Bug iframe-based:
 
 ```html
 <!-- Repeated iframe teardown while mapAsync is in flight -->
@@ -186,32 +164,6 @@ The original Bug 02 finding was iframe-based:
 This is a separate DoS vector that wedges the GPU process (rather than crashing it). Both vectors share the same root cause — missing synchronization between pending map IPC and device/frame teardown.
 
 **Recommendation:** Fix both in the same patch — the Worker variant (crash) and the iframe variant (wedge).
-
----
-
-## Recommended Fix
-
-**Option A — Reject pending mapAsync on device.destroy():**
-```
-When device.destroy() is called:
-1. Mark all pending mapAsync operations as rejected
-2. Deliver GPUMapError to the content process for each pending map
-3. In GPU process: do not deliver map results for destroyed devices
-```
-
-**Option B — Guard the IPC result handler:**
-```
-Before delivering mapAsync result:
-  if (buffer->device->is_destroyed()) { return; }
-```
-
-**Option C — Sequence enforcement:**
-```
-When device.destroy() is called with pending IPC operations:
-Wait for all in-flight IPC rounds to complete before freeing resources.
-```
-
-The fix in Option A or B is minimal. Option C may have performance implications.
 
 ---
 
@@ -228,21 +180,6 @@ evidence/worker_crash_confirmed.txt    — raw evidence, 3/3 crash, CLEAN contro
 BUG02_ESCALATION.md                    — escalation analysis + proof hierarchy + run instructions
 ```
 
-**Note on evidence provenance:** the 3/3 confirmation with a *clean* control matrix
-(controls pass, only the trigger crashes) is the **2026-06-29 hardware-GPU GUI run**
-recorded in `evidence/worker_crash_confirmed.txt`. The 2026-06-30 escalation attempt
-ran on a software-only host where the WebGPU backend is too unstable to attribute
-crashes (see "Escalation Attempt"); that host's crashes are **not** used as evidence.
+**Note on evidence provenance:** the 3/3 confirmation with a *clean* control matrix  (controls pass, only the trigger crashes) is the **2026-06-29 hardware-GPU GUI run** recorded in `evidence/worker_crash_confirmed.txt`. The 2026-06-30 escalation attempt ran on a software-only host where the WebGPU backend is too unstable to attribute crashes (see "Escalation Attempt"); that host's crashes are **not** used as evidence.
 
 ---
-
-## Notes
-
-- WebGPU is enabled but not the default in current Firefox stable — requires `about:config` opt-in
-- Workers WebGPU is a newer feature (`dom.webgpu.workers.enabled`) — higher chance of missing synchronization
-- The iframe DoS variant likely works without `dom.webgpu.workers.enabled`
-- `get_user_memories` sibling pattern does NOT apply here — this is a wgpu IPC concern
-
----
-
-*Researcher: sn0x | Authorized security research*
