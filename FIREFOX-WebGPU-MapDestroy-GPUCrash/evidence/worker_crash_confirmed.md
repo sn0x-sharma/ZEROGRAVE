@@ -1,6 +1,5 @@
-WebGPU Worker mapAsync/destroy Race — Crash Evidence
-Date: 2026-06-29
-Researcher: sn0x
+# WebGPU Worker mapAsync/destroy Race Crash Evidence
+
 Browser: Firefox 146.0.1 (Playwright build, Linux x86_64)
 Prefs: dom.webgpu.enabled=true, dom.webgpu.workers.enabled=true
 
@@ -41,18 +40,11 @@ await mapProm;      // awaiting stale operation → crash
 
 === ORIGINAL DOS VECTOR (iframes, webgpu_dos.html) ===
 
-Also confirmed (prior session). Repeated iframe teardown while mapAsync in flight
-wedges the GPU process, causing all subsequent requestAdapter()/requestDevice() calls
-to hang indefinitely. The Worker variant above is a STRONGER vector — full page crash
-vs. GPU wedge — and simpler (no iframes required).
+Also confirmed (prior session). Repeated iframe teardown while mapAsync in flight wedges the GPU process, causing all subsequent requestAdapter()/requestDevice() calls to hang indefinitely. The Worker variant above is a STRONGER vector — full page crash vs. GPU wedge and simpler (no iframes required).
 
 === CRASH HYPOTHESIS ===
 
-The GPU process (wgpu, Firefox's WebGPU backend) dispatches map IPC and destroy IPC
-in sequence. The destroy IPC frees the buffer's backing storage. When the pending
-map operation completes in the GPU process, it attempts to deliver the result to the
-now-freed buffer object → use-after-free in the GPU process → GPU process crash →
-Firefox tab crash.
+The GPU process (wgpu, Firefox's WebGPU backend) dispatches map IPC and destroy IPC in sequence. The destroy IPC frees the buffer's backing storage. When the pending map operation completes in the GPU process, it attempts to deliver the result to the now-freed buffer object → use-after-free in the GPU process → GPU process crash → Firefox tab crash.
 
 This is consistent with:
 - Crash occurs only when mapAsync and device.destroy() are BOTH called (race)
