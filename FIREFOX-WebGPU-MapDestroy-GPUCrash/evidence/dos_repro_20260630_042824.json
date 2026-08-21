@@ -1,0 +1,40 @@
+{
+  "verdict": "unstable-backend",
+  "rows": [
+    {
+      "run": 1,
+      "scenario": "control_adapter_only",
+      "result": "PASS:adapter",
+      "crashed": false
+    },
+    {
+      "run": 1,
+      "scenario": "control_adapter_device",
+      "result": "PASS:device",
+      "crashed": false
+    },
+    {
+      "run": 1,
+      "scenario": "control_map_no_destroy",
+      "result": "CRASH(TargetClosedError)",
+      "crashed": true
+    },
+    {
+      "run": 1,
+      "scenario": "control_destroy_no_map",
+      "result": "CRASH(TargetClosedError)",
+      "crashed": true
+    },
+    {
+      "run": 1,
+      "scenario": "TRIGGER_map_then_destroy",
+      "result": "CRASH(TargetClosedError)",
+      "crashed": true
+    }
+  ],
+  "prefs": {
+    "dom.webgpu.enabled": true,
+    "dom.webgpu.workers.enabled": true,
+    "gfx.webrender.all": true
+  }
+}

