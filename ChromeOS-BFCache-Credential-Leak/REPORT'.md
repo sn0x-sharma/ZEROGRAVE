@@ -2,40 +2,28 @@
 
 # Summary
 
-Chromium's password autofill deliberately withholds a saved password's real value from `element.value` until it believes the user has freshly, intentionally interacted with the page (`PasswordAutofillAgent::PasswordValueGatekeeper`). The flag this gate depends on is reset in exactly one place, tied to a brand-new document being committed (`ReadyToCommitNavigation`) — but a Back/Forward Cache (BFCache) restore resumes the same frozen document instead of committing a new one, and notifies observers through a completely separate channel (`DidSetPageLifecycleState`) that this component never listens to. The result: once any single, unrelated gesture has ever occurred on a page, the gate stays open forever across BFCache round trips. I built an end-to-end PoC that adds a real saved password, gets one incidental click, then has the page navigate itself away and immediately call `history.back()` with **zero further interaction** and confirmed the real password
+Chromium's password autofill deliberately withholds a saved password's real value from `element.value` until it believes the user has freshly, intentionally interacted with the page (`PasswordAutofillAgent::PasswordValueGatekeeper`). The flag this gate depends on is reset in exactly one place, tied to a brand-new document being committed (`ReadyToCommitNavigation`) but a Back/Forward Cache (BFCache) restore resumes the same frozen document instead of committing a new one, and notifies observers through a completely separate channel (`DidSetPageLifecycleState`) that this component never listens to. The result: once any single, unrelated gesture has ever occurred on a page, the gate stays open forever across BFCache round trips. I built an end-to-end PoC that adds a real saved password, gets one incidental click, then has the page navigate itself away and immediately call `history.back()` with **zero further interaction** and confirmed the real password
 lands in a freshly-created password field's `.value`, readable by any script on that origin, on the very first check after the restore. Reproduced 7/7 times across three variants with two different credentials.
 
 # Affected Version(s)
 
 - **Product:** Chromium / Google Chrome
-- **Platform:** Linux (tested); the mechanism (renderer-side C++, no Linux-specific code
-  path involved) is not platform-gated and is expected to reproduce on Windows/macOS/ChromeOS
-  builds sharing the same `components/autofill` and `content/renderer` source — not
-  independently verified on those platforms in this pass.
-- **Binary tested:** `/usr/bin/chromium` **147.0.7727.101**, stock Debian/Kali package
-  (`chromium` `147.0.7727.101-1`, maintainer: Debian Chromium Team). Confirmed via
-  `dpkg -s`/`file` that this is the unmodified distro package launcher, not a custom build **Note:** a newer packaged version
-  (149.0.7827.114-1) is available in the Kali repo but was not independently re-tested —
-  see Limits.
-- **Source audited:** Chromium `main` commit **`d90fdef3ca61a075b5a36f413b61e75035ccc5a8`**. Re-verified against a same-day-later `main` fetch
-  (`28c79d915cc052f2034eb1df9d3896a58986b839`, ~2 hours later) — byte-identical diff on
-  every file this report cites (see `evidence/2026-07-05-code-drift-check.txt`), i.e. not
-  already patched as of that re-fetch.
+- **Platform:** Linux (tested); the mechanism (renderer-side C++, no Linux-specific code path involved) is not platform-gated and is expected to reproduce on Windows/macOS/ChromeOS builds sharing the same `components/autofill` and `content/renderer` source not independently verified on those platforms in this pass.
+- **Binary tested:** `/usr/bin/chromium` **147.0.7727.101**, stock Debian/Kali package (`chromium` `147.0.7727.101-1`, maintainer: Debian Chromium Team). Confirmed via `dpkg -s`/`file` that this is the unmodified distro package launcher, not a custom build **Note:** a newer packaged version
+  (149.0.7827.114-1) is available in the Kali repo but was not independently re-tested — see Limits.
+- **Source audited:** Chromium `main` commit **`d90fdef3ca61a075b5a36f413b61e75035ccc5a8`**. Re-verified against a same-day-later `main` fetch (`28c79d915cc052f2034eb1df9d3896a58986b839`, ~2 hours later) — byte-identical diff on
+  every file this report cites, i.e. not already patched as of that re-fetch.
 
 # Vulnerability Class / Category
 
-Logic flaw / broken security-state invalidation: a security control that withholds a stored
-plaintext password from readable DOM state until a fresh user gesture is bypassed via a
-Back/Forward Cache restore, resulting in disclosure of the saved credential to same-origin
-page script with no fresh interaction. Not a memory-safety bug — a logic bug in
-state-machine / lifecycle-hook wiring.
+Logic flaw / broken security-state invalidation: a security control that withholds a stored plaintext password from readable DOM state until a fresh user gesture is bypassed via a Back/Forward Cache restore, resulting in disclosure of the saved credential to same-origin page script with no fresh interaction. Not a memory-safety bug — a logic bug in state-machine / lifecycle-hook wiring.
 
-**Proposed severity: Medium** — "exposure of sensitive user information that an attacker can
+**Proposed severity: Medium** "exposure of sensitive user information that an attacker can
 exfiltrate," per Chromium's Severity Guidelines. This is deliberately *not* claimed as the
 Low example "bypass requirement for a user gesture" (issue 256057): see the Impact Statement
 for why the sensitive-data-exposure consequence places it in Medium, and the "Non-Qualifying
 Categories" section for why it is not the bare-gesture-bypass Low bucket. It is also *not*
-claimed as High/Critical — a two-angle escalation investigation (cross-origin read;
+claimed as High/Critical a two-angle escalation investigation (cross-origin read;
 memory-corruption chain) was performed and both are genuine dead ends (details in the Impact
 Statement and in the attached `docs/research-inventory.md` item #12). Reporting the honest
 Medium rather than an inflated severity that would be downgraded on triage.
