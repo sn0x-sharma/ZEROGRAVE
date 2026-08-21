@@ -12,7 +12,6 @@
 
 A project-scoped API key configured with **Read-Only** permissions on a single resource type (Models) can **create, read, and delete** conversations via `/v1/conversations` — a completely different resource it was never granted access to. This is not a permission hierarchy design choice; this is a missing authorization middleware on an entire API endpoint.
 
-**This is the inverse of the prior rejected report (#61c43ac3).** That report showed write-keys could read (triager explained: "read is granted by default with write"). This finding shows **read-only keys performing destructive write operations**. The same explanation cannot apply — a read-only key cannot "include write by default."
 ---
 
 ## Steps to Reproduce
