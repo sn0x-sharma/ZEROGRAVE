@@ -1,8 +1,8 @@
-# SpiderMonkey Ion (WarpMonkey) trap-elision of `array.new_default` — Wasm-GC JIT miscompilation
+# SpiderMonkey Ion (WarpMonkey) trap-elision of `array.new_default` Wasm-GC JIT miscompilation
 
 **Component:** JavaScript: WebAssembly (SpiderMonkey optimizing JIT / Ion-Warp)
 **Class:** JIT miscompilation — mandatory trap eliminated by dead-code elimination (CWE-670 / CWE-758)
-**Found by:** nemesis differential fuzzer (SpiderMonkey target, cross-engine + cross-tier oracle)
+**Found by:** nemesis differential fuzzer (SpiderMonkey target, cross-engine + cross-tier oracle) {https://github.com/sn0x-sharma/ZEROGRAVE}
 **Affected (confirmed, dynamic):** Firefox **152.0.6** (target, `JavaScript-C152.0.6`), **153.0** release, **155.0a1** Nightly — all UNPATCHED.
 **Reference class:** CVE-2026-12321 (JIT miscompilation in JS: WebAssembly, MFSA 2026-57).
 
