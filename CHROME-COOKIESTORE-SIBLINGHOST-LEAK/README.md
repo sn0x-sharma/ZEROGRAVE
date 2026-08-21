@@ -1,7 +1,6 @@
 
 ## CookieStore 'change' event fires across port-distinct origins a document at http://host:A/ receives name+value of non-HttpOnly cookies set by http://host:B/
 
----
 
 ## Description
 
@@ -11,29 +10,7 @@ the cookie is set by the distinct Web Origin `http://host:PORT_B/`. The event ro
 matches on the RFC 6265 cookie domain (host only, port-agnostic) instead of the Web
 Origin (scheme + host + **port**).
 
-Confirmed on **Firefox 146.0.1** (automated Playwright test, 2026-06-30): a listener
-attached at `http://127.0.0.1:9101/` received the `change` event for a cookie set at
-`http://127.0.0.1:9102/` **after** the listener was attached — so this is the push
-event firing, not a `getAll()` snapshot.
-
-### What is and isn't novel here
-
-- **Reading** cross-port cookies is NOT novel. `document.cookie` and
-  `cookieStore.getAll()` are both port-agnostic by RFC 6265 design; a page at
-  `:9101` can already read `:9102`'s non-HttpOnly cookies. This is not the bug.
-- **The novel issue:** the `change` **event** is a new, push-based interface that, per
-  the Web Origin model, should be port-scoped — and is not. It lets a page at one port
-  learn the name+value of cookies set by another port **the instant they change, with
-  no polling** (no `setInterval` over `getAll()`, no CPU/timing fingerprint).
-
-### Scope limitation (stated honestly)
-
-- **HttpOnly cookies are correctly excluded** — confirmed; the flag is respected.
-- **Sibling hosts are correctly isolated** — `a.host` does not receive `b.host` events.
-- The **Service Worker `cookiechange` persistent variant is NOT part of this report.**
-  It requires `registration.cookies.subscribe()` and a background-SW delivery I could
-  not demonstrate in the test environment; it is explicitly not claimed here.
-
+Confirmed on **Firefox 146.0.1** (automated Playwright test, 2026-06-30): a listener attached at `http://127.0.0.1:9101/` received the `change` event for a cookie set at `http://127.0.0.1:9102/` **after** the listener was attached — so this is the push event firing, not a `getAll()` snapshot.
 ---
 
 ## Steps to Reproduce
