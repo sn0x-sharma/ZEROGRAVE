@@ -1,15 +1,5 @@
-# Mozilla Bugzilla Submission — Bug 03 (rewritten, confirmed-vector only)
-# Platform: bugs.mozilla.org — Product: Core / Component: DOM: Networking (Cookies)
-# Severity: S3 (Medium) | Security-sensitive: YES
-# Filed: 2026-06-29 | Rewritten: 2026-06-30
 
----
-
-## Title
-
-```
-CookieStore 'change' event fires across port-distinct origins — a document at http://host:A/ receives name+value of non-HttpOnly cookies set by http://host:B/
-```
+## CookieStore 'change' event fires across port-distinct origins a document at http://host:A/ receives name+value of non-HttpOnly cookies set by http://host:B/
 
 ---
 
@@ -174,25 +164,3 @@ delivery, which is why both Firefox and Chrome reproduce identically.
 |---|---|---|
 | Firefox | 146.0.1 | CONFIRMED (automated Playwright, document vector) |
 | Firefox | all with `cookieStore` change event (101+) | likely affected (same engine path) |
-
----
-
-## Cross-report note
-
-Also reported to Chrome VRP (Chromium 145 / Chrome 147 reproduce identically). The
-identical behaviour in two engines indicates a WHATWG CookieStore spec-level issue.
-
----
-
-## Attachments
-
-```
-1. cookiestore_xport_poc.html       — single-file browser PoC (serve on 2 ports, open lower; auto-demos the change event cross-port)
-2. document_vector_repro.py         — deterministic automated reproduction (run it)
-3. document_vector_confirmed.txt    — raw captured output (Firefox 146, this vector)
-4. comparison_docvscookiestore.txt  — proves getAll() == document.cookie (read is NOT novel)
-```
-
----
-
-*Research by sn0x — authorized security research. Read-only PoC, no user data touched.*
