@@ -1,0 +1,64 @@
+<meta charset="utf-8">
+<title>PQuota missing TrustParams gate — sn0x</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+     margin:0;padding:24px;max-width:1100px;margin-inline:auto}
+h1{font-size:19px;color:#e6edf3;border-bottom:1px solid #30363d;padding-bottom:12px;margin:0 0 18px}
+h2{font-size:15px;color:#e6edf3;margin:26px 0 8px}
+a{color:#58a6ff}
+.ok{color:#3fb950;font-weight:700}
+.bad{color:#f85149;font-weight:700}
+.warn{color:#d29922;font-weight:700}
+.muted{color:#8b949e}
+pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;overflow-x:auto;
+    white-space:pre-wrap;word-break:break-word;font-size:12.5px}
+.box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;margin:14px 0}
+.ctx{border-left:3px solid #d29922;background:#1c1a12}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;
+       border:1px solid #30363d;margin-right:6px}
+button{background:#238636;color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;
+       font-weight:700;cursor:pointer}
+button:disabled{background:#30363d;color:#8b949e;cursor:not-allowed}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+th,td{border:1px solid #30363d;padding:6px 9px;text-align:left;vertical-align:top}
+th{background:#161b22}
+#status{font-size:16px;font-weight:700;margin:14px 0}
+</style>
+<h1>Firefox PQuota missing TrustParams gate PoC — sn0x</h1>
+<div class="box ctx"><b>Execution context:</b> a <b>compromised content process</b>. Not reachable from web content, so this page is a results viewer for <code>poc.py</code> / <code>poc-getusage.py</code> rather than a trigger.</div>
+
+<div class="box"><span class="badge">RUNTIME-CONFIRMED</span>
+Reproduced on stock Firefox 153.0.1, default profile, <b>no prefs changed</b>.</div>
+
+<h2>Defect</h2>
+<p><code>QuotaParent.cpp</code> gates its 34 IPC handlers individually, using four different idioms.
+<b>12 handlers have no gate at all</b> — and the distribution is inverted: every <i>scoped</i>
+clear/shutdown variant is gated, while both <i>global</i> ones are not.</p>
+<table>
+<tr><th>operation</th><th>scope</th><th>gated</th></tr>
+<tr><td><code>ClearStoragesForOrigin / ForClient / ForOriginPrefix / ForOriginAttributesPattern / ForPrivateBrowsing</code></td><td>scoped</td><td class="ok">all five</td></tr>
+<tr><td><b><code>ClearStorage</code></b></td><td><b>every origin</b></td><td class="bad">no</td></tr>
+<tr><td><code>ShutdownStoragesForOrigin / ForClient</code></td><td>scoped</td><td class="ok">both</td></tr>
+<tr><td><b><code>ShutdownStorage</code></b></td><td><b>global</b></td><td class="bad">no</td></tr>
+</table>
+<p><code>ListOrigins</code>, <code>ListCachedOrigins</code> and <code>GetUsage</code> are worse still:
+they carry <b>neither</b> the child-side <code>dom.quotaManager.testing</code> pref <b>nor</b> a parent
+gate. Nothing to bypass.</p>
+
+<h2>Observed output — content process isolated to <code>http://127.0.0.1</code></h2>
+<pre>[CONTENT] pid=1970909 processType=2 remoteType=webIsolated=http://127.0.0.1 phase=done
+        resultCode=0 count=3
+          chrome                usage=9314304  lastAccessed=2026-08-03T15:07:52.957042+00:00
+          http://127.0.0.2:9412 usage=49157    lastAccessed=2026-08-03T15:07:55.187258+00:00
+          http://127.0.0.1:9412 usage=16384    lastAccessed=2026-08-03T15:08:00.129058+00:00</pre>
+<p class="ok">A process isolated to origin A received origin B's byte usage and last-access time —
+a read across the site-isolation boundary. Same rows returned in <i>every</i> content process,
+including <code>remoteType=prealloc</code> (no site assigned) and <code>extension</code>.</p>
+
+<div class="box"><b>Read-only.</b> The PoCs call <code>listOrigins()</code> and
+<code>getUsage()</code> only. <code>ClearStorage</code> and <code>ShutdownStorage</code> are
+source-confirmed and deliberately never executed.</div>
+
+
