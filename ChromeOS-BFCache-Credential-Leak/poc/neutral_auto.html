@@ -1,0 +1,9 @@
+<!doctype html><html><head><title>NeutralAuto</title></head>
+<body>
+<h1>Neutral (auto) — script navigates back on its own, no user input</h1>
+<script>
+// Pure script-driven back-navigation. history.back() is not gated behind any
+// user-activation/gesture requirement in Blink.
+setTimeout(() => { history.back(); }, 800);
+</script>
+</body></html>

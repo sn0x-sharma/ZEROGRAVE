@@ -1,0 +1,25 @@
+<!doctype html><html><head><title>PageA</title></head>
+<body>
+<h1>Page A (bfcache sticky-activation test)</h1>
+<button id="benign" autofocus>Click me (benign, unrelated to any password field)</button>
+<a id="tob" href="pageB.html">Go to Page B</a>
+<div id="log"></div>
+<script>
+function report(event){
+  var ha = navigator.userActivation.hasBeenActive;
+  var ia = navigator.userActivation.isActive;
+  document.getElementById('log').innerHTML += event + ": hasBeenActive="+ha+" isActive="+ia+"<br>";
+  fetch('/report?event='+encodeURIComponent(event)+'&hasBeenActive='+ha+'&isActive='+ia+'&t='+Date.now())
+    .catch(()=>{});
+}
+report('load');
+document.getElementById('benign').addEventListener('click', () => report('click'));
+window.addEventListener('pageshow', (e) => {
+  var ha = navigator.userActivation.hasBeenActive;
+  fetch('/report?event=pageshow&persisted='+e.persisted+'&hasBeenActive='+ha+'&t='+Date.now()).catch(()=>{});
+});
+window.addEventListener('pagehide', (e) => {
+  navigator.sendBeacon('/report?event=pagehide&persisted='+e.persisted+'&t='+Date.now());
+});
+</script>
+</body></html>
