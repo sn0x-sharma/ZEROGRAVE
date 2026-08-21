@@ -1,11 +1,10 @@
 # [Broken Access Control] > [Privilege Escalation] > P2
 
-## Read-Only API Key Performs Destructive DELETE on /v1/conversations — Scope Enforcement Absent
+## Read-Only API Key Performs Destructive DELETE on /v1/conversations Scope Enforcement Absent
 
 **VRT Category:** Broken Access Control > Privilege Escalation  
 **Target:** api.openai.com  
-**CVSS 3.1:** 7.1 (High) — AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:L  
-**Date Tested:** 2026-06-22
+**CVSS 3.1:** 7.1 (High) AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:L  
 
 ---
 
@@ -14,7 +13,6 @@
 A project-scoped API key configured with **Read-Only** permissions on a single resource type (Models) can **create, read, and delete** conversations via `/v1/conversations` — a completely different resource it was never granted access to. This is not a permission hierarchy design choice; this is a missing authorization middleware on an entire API endpoint.
 
 **This is the inverse of the prior rejected report (#61c43ac3).** That report showed write-keys could read (triager explained: "read is granted by default with write"). This finding shows **read-only keys performing destructive write operations**. The same explanation cannot apply — a read-only key cannot "include write by default."
-
 ---
 
 ## Steps to Reproduce
@@ -120,11 +118,11 @@ Authorization: Bearer FILES_WRITE_KEY
 
 | Key Type | Configured Scope | POST /conversations | GET /conversations/{id} | DELETE /conversations/{id} |
 |----------|-----------------|--------------------|-----------------------|--------------------------|
-| `all:write` | All → Write | ✅ 200 (expected) | ✅ 200 (expected) | ✅ 200 (expected) |
-| `all:read` | All → Read | ⛔ **200 — BAC** | ⛔ **200 — BAC** | ⛔ **200 — BAC** |
-| `files:write` | Files → Write only | ⛔ **200 — BAC** | ⛔ **200 — BAC** | ⛔ **200 — BAC** |
-| `models:read` | Models → Read only | ⛔ **200 — BAC** | ⛔ **200 — BAC** | ⛔ **200 — BAC** |
-| `threads:write` | Threads → Write only | ⛔ **200 — BAC** | ⛔ **200 — BAC** | ⛔ **200 — BAC** |
+| `all:write` | All → Write | 200 (expected) | 200 (expected) | 200 (expected) |
+| `all:read` | All → Read | **200 — BAC** | **200 — BAC** | **200 — BAC** |
+| `files:write` | Files → Write only | **200 — BAC** | **200 — BAC** | **200 — BAC** |
+| `models:read` | Models → Read only | **200 — BAC** | **200 — BAC** | **200 — BAC** |
+| `threads:write` | Threads → Write only | **200 — BAC** | **200 — BAC** | **200 — BAC** |
 | **Expected** | | write scope only | read scope only | write scope only |
 
 **Every key tested gets full CRUD on `/v1/conversations` regardless of configured permissions.**
@@ -144,21 +142,9 @@ Authorization: Bearer FILES_WRITE_KEY
 
 ---
 
-## Why This Is Different From Report #61c43ac3
-
-| Aspect | Report #61c43ac3 | This Finding |
-|--------|------------------|--------------|
-| Direction | Write key → Read | **Read key → Write/Delete** |
-| Triager's explanation | "Read granted by default with write" | Cannot apply — read keys don't include write |
-| Root cause | Permission hierarchy (by design) | **Missing authorization middleware** |
-| Destructive? | No (read only) | **Yes (DELETE operations)** |
-| Scope validation | Partial (some endpoints) | **Zero (entire endpoint unprotected)** |
-
----
-
 ## Impact
 
-**Severity: P2 — High (CVSS 7.1)**
+**Severity: P2 High (CVSS 7.1)**
 
 ### Direct Impact
 A project member with the most restricted key possible (`Models:Read` — intended only for listing models) can:
@@ -190,7 +176,7 @@ Add authorization middleware to `/v1/conversations` and `/v1/conversations/{id}`
 
 ---
 
-## Supporting curl Commands (Copy-Paste Ready)
+## Supporting curl Commands
 
 ```bash
 # Set your keys
@@ -217,9 +203,3 @@ curl -s -X POST https://api.openai.com/v1/conversations \
 curl -s https://api.openai.com/v1/conversations/<CONV_ID> \
   -H "Authorization: Bearer $FILES_WRITE_KEY"
 ```
-
----
-
-## Test Date
-
-2026-06-22 — all requests confirmed live against api.openai.com
