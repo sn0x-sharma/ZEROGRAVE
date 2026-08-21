@@ -1,10 +1,3 @@
-# Mozilla Bugzilla Submission — Bug 03 (rewritten, confirmed-vector only)
-# Platform: bugs.mozilla.org — Product: Core / Component: DOM: Networking (Cookies)
-# Severity: S3 (Medium) | Security-sensitive: YES
-# Filed: 2026-06-29 | Rewritten: 2026-06-30
-
----
-
 ## Title
 
 ```
