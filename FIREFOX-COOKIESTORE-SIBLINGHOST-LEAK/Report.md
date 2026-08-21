@@ -139,8 +139,4 @@ delivery, which is why both Firefox and Chrome reproduce identically.
 |---|---|---|
 | Firefox | 146.0.1 | CONFIRMED (automated Playwright, document vector) |
 | Firefox | all with `cookieStore` change event (101+) | likely affected (same engine path) |
-
-
 ---
-
-*Research by sn0x — authorized security research. Read-only PoC, no user data touched.*
