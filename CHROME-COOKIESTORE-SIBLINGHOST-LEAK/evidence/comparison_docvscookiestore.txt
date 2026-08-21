@@ -1,0 +1,39 @@
+=== document.cookie vs cookieStore CROSS-PORT comparison ===
+Date: 2026-06-29 (re-scoped 2026-06-30)
+Test: http://localhost:9001 reading cookies set at http://localhost:9002 (same host, diff port)
+
+document.cookie contains victim_port_only:        TRUE
+cookieStore.getAll() contains victim_port_only:   TRUE
+
+CONCLUSION (read path):
+- document.cookie ALSO sees cross-port cookies (RFC 6265 port-agnostic design).
+- cookieStore.getAll() inherits the same behaviour — this is NOT a new bypass and is
+  NOT claimed as a finding.
+
+=== Cross-scheme note ===
+document.cookie at http://localhost:9001 sees https://localhost:9443 Secure cookie: TRUE
+cookieStore.getAll() at http://localhost:9001 sees the same: TRUE
+- Both APIs show the same cross-scheme behaviour (RFC 6265: scheme not in domain match).
+- Not a new bypass; not claimed.
+
+=== WHAT IS ACTUALLY NOVEL (the claimed finding) ===
+The cookieStore CHANGE EVENT has no document.cookie equivalent:
+  cookieStore.addEventListener('change', ...) fires cross-port, in real time, with the
+  cookie NAME and VALUE, and with NO polling.
+document.cookie can only detect changes by polling:
+  setInterval(() => check(document.cookie), 1000)   // open page, CPU/timing detectable
+
+So the read of cross-port cookies is pre-existing (RFC 6265); the bug is the push
+'change' event firing across the Web Origin (port) boundary.
+
+=== REPORT SCOPE (current) ===
+CLAIMED:     document cookieStore.addEventListener('change') fires cross-port
+             (real-time, no-poll notification of a sibling-port cookie's name+value).
+NOT CLAIMED: cookieStore.getAll() cross-port read (inherited RFC 6265, same as
+             document.cookie).
+NOT CLAIMED: Service Worker cookiechange persistent variant (subscribe()-gated;
+             background-SW delivery not demonstrated).
+
+SEVERITY: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:N/A:N = 4.7 (Medium).
+(Confidentiality = Low because the cross-port read pre-exists via getAll; the event
+vector's unique contribution is reliable real-time push, not a new data class.)
