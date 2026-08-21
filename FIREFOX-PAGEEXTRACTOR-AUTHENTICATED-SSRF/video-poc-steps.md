@@ -137,14 +137,6 @@ grep smartwindow /tmp/ffpoc-*/prefs.js
 
 ## 6. Closing line for the recording
 
-> The host check exists and fires — rows C and E prove it. It just isn't applied on the path the
+> The host check exists and fires rows C and E prove it. It just isn't applied on the path the
 > tools actually use, and the gate above it needs *both* taint flags when five of the seven tools
 > only ever set one.
-
-## Honest caveats to state on camera
-
-- This needs script inside `about:welcome`; no web-content path into that page was found and none is
-  claimed.
-- The LLM step that would choose the URL in a real attack is not demonstrated here.
-- `-remote-allow-system-access` is used by `poc.py` purely as a verification oracle to reach the
-  parent module directly. It is not part of the attack path.
