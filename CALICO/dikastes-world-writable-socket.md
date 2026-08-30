@@ -1,4 +1,4 @@
-Dikastes World-Writable Unix Socket — Unauthenticated Policy Authorization Server
+## Dikastes World-Writable Unix Socket Unauthenticated Policy Authorization Server
 
 **Status**: CONFIRMED (static analysis)
 **Severity**: MEDIUM-HIGH (context-dependent)
