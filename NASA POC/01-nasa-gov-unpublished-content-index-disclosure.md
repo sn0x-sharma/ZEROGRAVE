@@ -54,13 +54,8 @@ press-release 878036) just return their normal public content. So this leaks
 ## Verdict
 Real, reproducible, in-scope (www.nasa.gov is Target 1). Not on NASA's never-submit
 list (not headers/CORS/version-disclosure/verbose-error). Severity is genuinely
-low — no PII, no auth bypass, no content body — so this is P4/P3 (Informational–Low)
+low no PII, no auth bypass, no content body — so this is P4/P3 (Informational–Low)
 on its own. Logged here rather than submitted standalone; revisit if a chain shows
 up (e.g. an internal `content-lists` or preview route that accepts these IDs and
 returns full body — `nasa-hds/v1/content-lists` untested, worth a follow-up).
 
-## Next steps (not yet done)
-- Test `nasa-hds/v1/content-lists`, `current-iotd`, `gallery-iotd`, `recent-iotd`,
-  `site-banner` GETs for the same missing-permission_callback pattern.
-- Do NOT call the POST routes (`edac/v1/fixes/update`, `synts/v1/create`) without
-  a throwaway-safe payload plan — they mutate state per data-safety rules.
