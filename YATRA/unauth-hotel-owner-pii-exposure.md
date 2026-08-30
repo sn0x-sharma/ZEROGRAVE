@@ -1,4 +1,4 @@
-# HIGH-01: Unauthenticated Hotel Owner PII Exposure via IDOR
+# Unauthenticated Hotel Owner PII Exposure via IDOR
 
 ## Severity: HIGH
 **CVSS**: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)  
