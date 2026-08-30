@@ -1,0 +1,15 @@
+jenkins.arc.nasa.gov
+artifactory.amesaero.nasa.gov
+dlabnotebooks.jpl.nasa.gov
+arc-nomad-gw.ndc.nasa.gov
+kafka2.gcn.nasa.gov
+kafka3.gcn.nasa.gov
+kafka3.test.gcn.nasa.gov
+fmsspnexus2.ndc.nasa.gov
+fmsstnexus2.ndc.nasa.gov
+fmsstnexus.larc.nasa.gov
+gs6102dsc-nexus1.gesdisc.eosdis.nasa.gov
+workflow.sp.jsc.nasa.gov
+asdcbuild.larc.nasa.gov
+afbuild.arc.nasa.gov
+gslibbuild.gsfc.nasa.gov
