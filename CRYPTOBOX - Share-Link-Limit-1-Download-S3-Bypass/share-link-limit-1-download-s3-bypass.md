@@ -1,4 +1,4 @@
-# Critical: Missing Authentication on file content-serving endpoint (`chunk_info`) allows unauthenticated retrieval of ANY file in ANY workspace — share-link "Limit to 1 download" and "Expiration date" are simply the first symptoms of this
+# Critical: Missing Authentication on file content-serving endpoint (`chunk_info`) allows unauthenticated retrieval of ANY file in ANY workspace share-link "Limit to 1 download" and "Expiration date" are simply the first symptoms of this
 
 ## Summary
 
@@ -109,14 +109,3 @@ Content confidentiality on this platform is protected **only by the difficulty o
 - **No revocation is possible, ever.** Removing a member from a workspace, deleting a share link, letting "Limit to 1 download" or "Expiration date" fire — none of it matters, because `chunk_info` never checked membership, share state, or expiry in the first place. Anyone who has ever legitimately seen a file's ID (a removed collaborator, an expired share recipient, a viewer on an old device, anyone `cc`'d once) retains permanent, unauthenticated re-access.
 - **The three sharing-security controls this product exposes to users — role-based workspace access, "Limit to 1 download," and "Expiration date" — are all simultaneously defeated** by this one gap, because all three assume the content-serving layer respects application state that it never actually reads.
 - Content returned is still AES-encrypted ciphertext (this is an E2EE product), so this is not a direct plaintext leak by itself — but the program's own scope explicitly lists unauthorized access to *"files/messages stored in a workspace/conversation you are not part of"* as a qualifying, rewarded vulnerability class independent of encryption, because (a) it defeats every access-control guarantee the product claims to provide, and (b) any decryption-key exposure elsewhere (a compromised device, a leaked `space_client_key`, a future bug) instantly compounds into full plaintext disclosure with no possibility of the server-side controls having limited exposure in the interim.
-
-## Recommended Fix
-
-`chunk_info` must enforce authorization before returning chunk metadata / presigned URLs, matching what every other endpoint in this API already does correctly:
-1. Require a valid `Cryptonuage-SIGMA` session with active membership + role permitting read access to that specific `space_id`, **or**
-2. Require a valid `Cryptonuage-ShareAuthKey` that was actually issued for that specific `file_id`, and re-validate `unique_download` / `not_after` state on every call — not just at the metadata handshake.
-3. Once (1)/(2) are fixed, the "Limit to 1 download" and "Expiration date" bypasses in sections 5–6 are automatically closed, since they're symptoms of the same missing check rather than independent bugs.
-
-## Notes on Testing Scope
-
-All testing used accounts I own (a primary account plus a second account, both under my control) and files I created. No `space_id`/`file_id` pairs were guessed, brute-forced, or enumerated; every ID used in this report was independently obtained via my own accounts' normal, legitimate API responses in this test session. I did not download or inspect file content beyond byte-count/HTTP-status confirmation needed to prove the access-control failure, and did not probe any workspace or account outside ones I own.
