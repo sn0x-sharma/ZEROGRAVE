@@ -2,9 +2,9 @@
 
 ## Summary
 
-`GET /api/space/{space_id}/file/{file_id}/chunk_info` — the endpoint that issues the presigned S3 URL used to fetch a file's encrypted content — performs **no authentication or authorization check whatsoever**. Not "wrong scope," not "stale credential still honored": no `Authorization` header of any kind is required at all, and any header value (including a garbage, non-derived one) is accepted identically.
+`GET /api/space/{space_id}/file/{file_id}/chunk_info` the endpoint that issues the presigned S3 URL used to fetch a file's encrypted content performs **no authentication or authorization check whatsoever**. Not "wrong scope," not "stale credential still honored": no `Authorization` header of any kind is required at all, and any header value (including a garbage, non-derived one) is accepted identically.
 
-This was discovered while testing the document Share link's **"Limit to 1 download"** and **"Expiration date"** controls, which both appeared bypassable via presigned-URL reuse. Digging into the actual root cause showed the real bug is much larger: `chunk_info` never validates *any* credential — not a session, not a share key, not workspace membership, not role, not share state. As a direct consequence:
+This was discovered while testing the document Share link's **"Limit to 1 download"** and **"Expiration date"** controls, which both appeared bypassable via presigned-URL reuse. Digging into the actual root cause showed the real bug is much larger: `chunk_info` never validates *any* credential not a session, not a share key, not workspace membership, not role, not share state. As a direct consequence:
 
 - A share-link's "Limit to 1 download" and "Expiration date" settings are unenforceable (demonstrated below)
 - **Every file in every workspace on the platform can be fetched by anyone who has ever seen its `(space_id, file_id)` pair — with zero authentication, zero relationship to that workspace, and no way to revoke access afterward** (removing a member, deleting a share, or letting a link expire does not matter, because `chunk_info` never checked any of that state to begin with)
