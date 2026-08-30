@@ -1,7 +1,5 @@
 # CRITICAL OAuth Vulnerability Chain - Withings
 
-## Date: 2026-07-02
-
 ---
 
 ## FINDING 1: OAuth redirect_uri Bypass (CRITICAL)
