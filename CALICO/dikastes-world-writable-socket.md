@@ -1,10 +1,9 @@
-# FINDING-002: Dikastes World-Writable Unix Socket — Unauthenticated Policy Authorization Server
+Dikastes World-Writable Unix Socket — Unauthenticated Policy Authorization Server
 
 **Status**: CONFIRMED (static analysis)
 **Severity**: MEDIUM-HIGH (context-dependent)
 **Component**: app-policy / dikastes
 **File**: `app-policy/pkg/dikastes/dikastes.go` lines 43, 65-66, 72
-**CVE candidate**: Yes
 
 ---
 
